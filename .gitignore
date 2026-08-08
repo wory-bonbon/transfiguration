@@ -1,1 +1,5 @@
 .DS_Store
+
+# ローカルの録画素材（デモは YouTube でホスト）
+/capture.mov
+/capture-fadeout.mp4
