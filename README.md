@@ -42,3 +42,9 @@ Built with `Three.js` and `Web Audio API`.
 
 The geometry is generated and transformed in real time.  
 The sound is generated from the geometry itself — no soundtrack or audio samples.
+
+## License
+
+Source code is licensed under the [MIT License](./LICENSE).
+
+Artwork and visual assets in [`assets/`](./assets/) are © 2026 Wory Bonbon. All rights reserved.
