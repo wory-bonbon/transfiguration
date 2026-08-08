@@ -1389,8 +1389,8 @@ v1.1でも以下を行わない。
 実施結果：
 
 ```text
-main                 32dc038   Sound追加前の visual baseline（ロールバック先）
-feature/sonification 2cc1f98   polyhedra_transfiguration (4).html → index.html
+main                 3363847   Sound追加前の visual baseline（ロールバック先）
+feature/sonification 68d4c6d   polyhedra_transfiguration (4).html → index.html
 ```
 
 `.backup-YYYYMMDD` コピーは作成しない。git の初期コミットがバックアップを兼ねる。
@@ -1497,7 +1497,7 @@ Sound実装は既存描画から疎結合にする。
 3. Sound用metrics取得は読み取り専用とし、描画座標へ副作用を持たせない。
 4. git上でSound導入前commitへ戻せる状態で作業する。
 
-ロールバック先は `main` の **`32dc038`**（Phase 0 の visual baseline）。
+ロールバック先は `main` の **`3363847`**（Phase 0 の visual baseline）。
 
 ---
 
