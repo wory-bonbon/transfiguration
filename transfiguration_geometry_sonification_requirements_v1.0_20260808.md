@@ -1,11 +1,33 @@
 # TRANSFIGURATION — Geometry Sonification 要件定義書
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Date:** 2026-08-08  
 **Target:** `TRANSFIGURATION — 多面体変相` WebGL作品  
-**Current source:** `polyhedra_transfiguration (4).html`  
+**Current source:** `index.html`（v1.0時点の `polyhedra_transfiguration (4).html` を Phase 0 でリネーム）  
 **Purpose:** 多面体・数式によるリアルタイム音響生成（Sonification）の追加  
-**Status:** 実装前要件定義
+**Status:** Phase 0 完了 / Phase 1 実装前
+
+---
+
+## v1.1 変更履歴
+
+v1.0 は既存HTMLを精読する前に書かれた要件定義であり、実装確認の結果、いくつかの前提が成立しないことが判明した。v1.1 はその修正版である。
+
+**v1.1 が正史であり、以下の表で「廃止」とした v1.0 の記述は無効とする。**
+
+| # | 変更点 | 該当章 | 理由 |
+|---|---|---|---|
+| 1 | `update()` に音響処理を入れず、25Hz の独立した読み取り専用 audio metrics パスを採用 | §5.2 / §16.1 / §22 / §29 | 描画ホットパスへの副作用をゼロにするため。追加コストは約 10k 演算/秒で無視できる |
+| 2 | Audio Graph を `Voices → Mix → Compressor → MasterGain → Destination` に変更 | §11 / §17 | fade用Gainが Compressor の前段だと、fade in 初期に音量の膨らみが出る |
+| 3 | 周波数の hard clamp を廃止。範囲外 voice は gain fade で処理 | §4.2 / §24 | clamp すると voice が境界に張り付き、幾何比率が失われ、複数 voice が同一周波数へ潰れる |
+| 4 | 形態ごとの追加音域正規化を行わない | §4.2 | 正多面体は辺長が均一なため、形態別に正規化すると ico / dod / ti の区別が消え AC-05 を満たせない |
+| 5 | ランタイム辺長クラスタリングを廃止し、幾何クラス A / B / C / D × 2モード方式を採用 | §4.1 / §22 / §23 | 位相が完全に静的なため分類はコンパイル時に確定できる。かつ正多面体では辺長が均一で、クラスタリングは1〜2クラスタに退化し8モードを構成できない |
+| 6 | 音響クラスを `kind` index へ固定しない | §23 / §24 | 区間1→2 の base 切替（ico→dod）で kind=0 / kind=1 の役割が反転し、voice が瞬間ジャンプするため |
+| 7 | L→0 時の Infinity / NaN 防御を必須化 | §18 / §24 / AC-15 | τ=0 でクラスB、τ=0.5 でクラスA が厳密に 0 になる。非有限値は AudioParam 例外、またはグラフ全体の恒久的無音化を招く |
+| 8 | SOUND UI は通常の `<button>` を使用 | §13.2 | アクセシビリティと標準的な操作性を優先 |
+| 9 | interactive element にフォーカスがある場合、SPACE HOLD を発火しない | §13.2 / §14 / AC-16 | button クリック後にフォーカスが残り、SPACE で HOLD と SOUND が同時にトグルされるため |
+| 10 | モバイルでも SOUND 操作を可能にする | §13 / §13.2 / AC-17 | 既存 `.br` は `max-width:680px` で `display:none` のため、そのまま追加すると 680px 以下でトグルが消える |
+| 11 | baseline FPS 計測を Phase 0 必須項目から外す | §28 | AC-14 の描画差分検証は visual baseline スクリーンショットで足りる。FPS は Phase 4 の性能確認で必要に応じて実施する |
 
 ---
 
@@ -88,20 +110,28 @@ M = diag(s^−1/2, s, s^−1/2)
 det M = 1
 ```
 
-既存コード上では、
+既存コード上の接続点は以下（v1.1 でコード実測により確定）。
 
-- `buildModel(base)`
-- `M.update(tau, sigma, st, chaos)`
-- `applySequence(dt)`
-- `curTau`
-- `curSig`
-- `curSt`
-- `chaos`
-- `MODEL.ico`
-- `MODEL.dod`
-- `frame()`
+| 識別子 | スコープ | 音響側での用途 |
+|---|---|---|
+| `curM` | module | 現在アクティブなモデル。`curM.K`（静的な位相）と `curM.base`（静的な基底頂点）を読む |
+| `curTau` / `curSig` / `curSt` | module | 現在の τ / σ / s |
+| `curChaos` | **v1.1 で新規追加** | 現在の chaos。v1.0 時点では `applySequence()` のローカル変数で、外部から参照できない |
+| `MODEL.ico` / `MODEL.dod` | module | モデル実体。通常は `curM` 経由で参照する |
+| `frame()` | module | 音響更新の呼び出し位置（`applySequence(dt)` の直後） |
+| `buildModel(base)` / `M.update(...)` | — | **読むだけ。v1.1 では改変しない**（§5.2） |
 
-が音響側との主要な接続点になる。
+### 既存JavaScriptへの変更は次の3箇所のみとする
+
+| # | 場所 | 変更内容 | 根拠 |
+|---|---|---|---|
+| 1 | `applySequence()` | `curChaos = chaos;` を追加（`curTau` / `curSig` / `curSt` と同じ位置・同じ形式） | §5.2 |
+| 2 | `frame()` | `applySequence(dt)` の直後に音響更新の呼び出しを1行追加 | §12 |
+| 3 | SPACE の `keydown` ハンドラ | interactive element にフォーカスがある場合は HOLD を発火しないガードを追加 | §13.2 / AC-16 |
+
+これ以外の既存関数の書き換えを行ってはならない。特に `buildModel()` と `M.update()` は読むだけで、一切変更しない。
+
+3 は既存の挙動を変えるように見えるが、変更前の挙動（`document.body` にフォーカスがある通常状態）では完全に同一であり、v1.0 時点では存在しなかった interactive element がフォーカスを持つ場合のみ分岐する。
 
 ---
 
@@ -148,17 +178,27 @@ det M = 1
 
 ## 4.1 基本方式
 
-v1.0では **8 voice程度の固定数の共鳴モード** を使用する。
+**8 voice の固定数**の共鳴モードを使用する。
 
-推奨：
+v1.1 では、この 8 voice の内訳を次のように固定する。
+
+```text
+8 voices = 幾何クラス 4 種（§23 の A / B / C / D） × 2 モード
+```
+
+voice スロットと幾何クラスの対応は静的であり、実行中に組み替えない（§24）。
 
 ```text
 8 resonant voices
 +
-Master Gain
+Voice Mix
 +
-Dynamics Compressor / Limiter相当
+Compressor / Limiter相当
++
+Master Gain
 ```
+
+※ 接続順は §11 を参照（v1.1 で Compressor と Master Gain の順序を入れ替えた）。
 
 AudioNodeをフレームごとに生成・破棄しない。
 
@@ -191,32 +231,48 @@ f ∝ 1 / L
 
 ただし画面内の全辺を個別Oscillatorへ直接割り当てない。
 
-### 必須処理
+### 必須処理（v1.1 改訂）
 
-1. 現在の幾何形状から代表的な長さ群を抽出する。
-2. 類似長をクラスタリングする。
-3. 上位最大8モードへまとめる。
-4. 長さの逆数比を周波数比へ変換する。
-5. 聴覚上の極端な低域・高域はClampする。
-6. 全形態で基準音域が極端に移動しないよう正規化する。
+1. 現在の幾何形状から、§23 が定義する幾何クラス A / B / C / D の代表長を取得する。
+2. 各クラス長の逆数比を、そのまま周波数比へ変換する。
+3. 各クラスに 2 モードを割り当て、計 8 voice とする。
+4. 長さが 0 へ退化したクラスは、**周波数を clamp せず gain を 0 へフェード**する。
+5. 非有限値（Infinity / NaN）を AudioParam へ渡さない（§18 / AC-15）。
 
-推奨初期範囲：
+### 廃止した処理（v1.0 からの削除）
+
+以下は v1.1 で**行わない**。v1.0 の該当記述は無効とする。
+
+| 廃止項目 | 置換先 |
+|---|---|
+| 類似長をランタイムでクラスタリングする | §23 の静的な幾何クラス分類 |
+| 上位最大8モードへまとめる | 4クラス × 2モード = 8 の固定割当（§4.1） |
+| 聴覚上の極端な低域・高域を Clamp する | gain fade（上記4） |
+| 全形態で基準音域が移動しないよう正規化する | **行わない**（下記） |
+
+**形態ごとの追加音域正規化を行ってはならない。** 正多面体・準正多面体は定義上すべての辺長が等しいため、形態別に音域を正規化すると Icosahedron / Dodecahedron / Truncated Icosahedron が同一音域へ潰れ、AC-05 を満たせなくなる。
+
+### 周波数式
 
 ```text
-55 Hz ～ 1760 Hz
+f = f0 · ( L_ref / L )
+
+f0    = 110 Hz    固定
+L_ref = 1.2361    固定定数
+        （中半径を1に正規化した正二十面体の辺長 a = 2/φ）
 ```
 
-基準周波数は固定値を使用してよい。
+`L_ref` は形態によらず固定する。これにより幾何学的な長さ比がそのまま音程比になる。
 
-例：
+「音階へ量子化」しない。幾何学的な比率を維持する。
 
-```text
-f0 = 110 Hz
-```
+### 実測される音域
 
-ただし「音階へ量子化」しない。
+上式で §23 の各クラスを鳴らした場合、基音は約 **110〜400 Hz**、affine 変形（s）による分裂とモード倍音を含めても約 **1.7 kHz 以下**に収まる（実測値は §23 の表）。
 
-幾何学的な比率を維持する。
+したがって v1.0 が想定した 55〜1760 Hz の範囲に自然に収まり、clamp は不要である。
+
+なお 55 Hz はノートPC内蔵スピーカーの多くが再生できないため、基音の実用下限は 110 Hz 前後とする。
 
 ---
 
@@ -242,39 +298,66 @@ f0 = 110 Hz
 
 ---
 
-## 5.2 audioMetrics
+## 5.2 audioMetrics（v1.1 改訂）
 
-`buildModel()` またはその周辺へ、描画とは独立した軽量な音響メトリクスを追加する。
+### 方式：独立した読み取り専用パス
 
-概念：
+**`M.update()` の内部には音響処理を一切追加しない。**
+
+音響メトリクスは、`update()` とは完全に独立した読み取り専用関数として実装し、約 **25 Hz** で実行する。
+
+```text
+frame()
+ ├─ applySequence(dt) → M.update(...)     ← 描画。音響コードを入れない
+ └─ SOUND.tick()                          ← 25Hz スロットリング。読み取りのみ
+       ↓
+     curM.base.V / curM.K（静的）と curTau / curSt から P[60] を再計算
+       ↓
+     §23 の幾何クラス A / B / C / D を算出
+```
+
+#### v1.0 からの変更理由
+
+v1.0 §5.2 は `M.update()` の計算途中で `A` / `B` / `AP` / `C` / `N` / `Rf` を流用する方式だったが、v1.1 ではこれを採用しない。
+
+- `update()` は毎フレーム実行される最ホットパスであり、ここへ分岐や書き込みを入れると AC-14 / §16.2（描画とFPSに差を出さない）の検証コストが跳ね上がる
+- 独立パスの実測コストは、25 Hz で「60頂点の再計算 + 90本の辺長 + 32面の重心・法線」＝**約 10k 演算/秒**であり、無視できる
+- §30 のロールバック条件を完全に満たす。音響ブロックを削除するだけで元の作品に戻る
+
+したがって v1.0 §5.2 の「`M.update()` の計算中に利用して更新する」という記述は**無効**とする。
+
+### 取得するもの
 
 ```js
 audioMetrics = {
-  edgeLengths: [],
-  faceAreas: [],
-  centers: [],
-  normals: [],
-  radius: 0
+  classes: [ /* §23 の A / B / C / D。各 { len, spread, weight } */ ],
+  centers: [],   // P2 定位用（§15）
+  normals: [],   // P2 定位用（§15）
+  radius: 0      // 参考値
 }
 ```
 
-`M.update()` の計算中に、すでに算出している
+### 座標系（重要）
 
-- `A`
-- `B`
-- `AP`
-- `C`
-- `N`
-- `Rf`
+音響メトリクスは、**`inset` / `lift` / 面回転を適用する前の `P` 座標**から算出する。
 
-等を利用して更新する。
+`update()` 内の `Q` は `inset = 0.905 − 0.115·chaos` によって一様スケールされているため、`Q` を使うと chaos が最大 1.145 倍（約 2.3 半音）の全体ピッチ変動として音程へ漏れる。chaos は §6.4 が定義する detune / beating / inharmonicity としてのみ作用させる。
+
+同じ理由で、`M.radius()`（= `maxR`）は `AP` と `lift` を含み chaos 依存であるため、**正規化基準には使わない**。
+
+### 時間軸
+
+音響は `THREE.Clock` の `elapsedTime`（コード上の `t`）を参照しない。`getDelta()` は clamp されるが `elapsedTime` は clamp されず、タブ復帰時に大きく飛ぶ既存挙動があるため。
+
+- スケジューリング：`ctx.currentTime`
+- 状態：`curTau` / `curSig` / `curSt` / `curChaos`
 
 ### 制約
 
 - 描画結果を変更しない。
-- 音響用データ取得のためだけに同一幾何を大規模再計算しない。
 - 毎フレーム大量のObject生成を行わない。
-- 可能ならTypedArrayまたは再利用Arrayを使う。
+- TypedArrayまたは再利用Arrayを使う（`P[60]` は再利用 `Float32Array`）。
+- 静的テーブル（辺クラス分類・面インデックス）はモデルごとに初回1回だけ構築し、モデルへ読み取り専用プロパティとしてキャッシュしてよい。
 
 ---
 
@@ -389,6 +472,14 @@ chaos ↓
 
 とする。
 
+### chaos は幾何長へ作用させない（v1.1 追記）
+
+既存コードでは `chaos` が `inset` / `lift` / 面回転を駆動しているが、これらのうち音響へ影響しうるのは `inset` による**全辺の一様スケール**だけである（面回転は長さを変えない）。
+
+この一様スケールをそのまま音程へ通すと、chaos が最大 1.145 倍（約 2.3 半音）の全体ピッチ変動になり、「構造が移動している」という表現と競合する。
+
+したがって §5.2 のとおり `inset` 適用前の `P` 座標を使い、chaos は上記の detune / beating / inharmonicity としてのみ作用させる。
+
 ### 禁止
 
 - 大きなランダム音
@@ -497,7 +588,7 @@ crystal resonance
 
 # 10. Web Audio 構成
 
-v1.0では外部Audio libraryを導入しない。
+v1.1でも外部Audio libraryを導入しない。
 
 使用候補：
 
@@ -517,7 +608,7 @@ PeriodicWave（必要な場合のみ）
 
 # 11. Audio Graph
 
-概念：
+v1.1 の接続順：
 
 ```text
 Voice 1 ─┐
@@ -525,10 +616,20 @@ Voice 2 ─┤
 Voice 3 ─┤
 Voice 4 ─┤
 Voice 5 ─┤
-Voice 6 ─┤→ Voice Mix → Master Gain → Compressor → Destination
-Voice 7 ─┤
+Voice 6 ─┤→ Voice Mix → Compressor → Master Gain → Destination
+Voice 7 ─┤                            (limiter設定)   (fade)
 Voice 8 ─┘
 ```
+
+### v1.0 からの変更理由
+
+v1.0 は `Master Gain → Compressor` の順だったが、これを**入れ替える**。
+
+fade 用の Master Gain が Compressor の**前段**にあると、fade in 初期の小音量に Compressor が反応せず、音量が立ち上がった瞬間にゲインリダクションが遅れて一時的な「膨らみ」が出る。これは §17 の「sudden gain jump防止」と衝突する。
+
+Compressor をリミッターとして先に置き、その後段で Master Gain によりフェードすることで、ON/OFF が常にクリーンになる。
+
+v1.0 §11 の接続順、および §17 の「Master段にDynamicsCompressorNode等を配置」という記述は**無効**とする。
 
 P2では各VoiceまたはVoice Groupの前段へStereoPannerを追加できる。
 
@@ -540,13 +641,15 @@ WebGLは毎フレーム描画を継続する。
 
 Audio制御値の重い計算は必ずしも60fpsで行わない。
 
-推奨：
+v1.1 で確定：
 
 ```text
-Geometry render : requestAnimationFrame
-Audio metrics   : 20–30 Hz程度
+Geometry render : requestAnimationFrame（既存のまま）
+Audio metrics   : 25 Hz（独立した読み取り専用パス。§5.2）
 Audio smoothing : Web Audio automation
 ```
+
+音響メトリクスの更新は `frame()` から呼ぶが、内部で経過時間を見て 25 Hz にスロットリングする。Sound OFF 時は関数先頭で即 return し、メトリクス計算を一切行わない（P0-6）。
 
 Audio parameter変更には可能な限り、
 
@@ -582,6 +685,20 @@ Sound ON時：
 SOUND — ON
 ```
 
+Audio初期化に失敗した場合（§18）：
+
+```text
+SOUND — N/A
+```
+
+### 表示要件（v1.1 追記）
+
+**SOUND トグルは全画面幅で操作可能でなければならない。**
+
+既存 `.br` は `@media (max-width:680px)` で `display:none` になっているため、`.br` 内へそのまま行を追加すると 680px 以下で SOUND トグルが消える。モバイルは AudioContext のユーザージェスチャ要件が最も厳しい環境であり、ここで操作できないことは許容しない（AC-17）。
+
+対応方針：680px 以下では `.br` のうち **SOUND 行のみを表示**する。既存の 3 行（DRAG / SCROLL / SPACE）は従来どおり非表示のままとし、レイアウトの見え方を変えない。
+
 ---
 
 ## 13.1 初期状態
@@ -598,15 +715,42 @@ SOUND — OFF
 
 ---
 
-## 13.2 UI実装上の注意
+## 13.2 UI実装上の注意（v1.1 改訂）
 
-既存 `.ui` は `pointer-events:none` を使用しているため、Sound toggleはクリック可能な独立要素または対象部分のみ `pointer-events:auto` とする。
+### 要素種別：通常の `<button>` を使用する
 
-既存レイアウト・タイポグラフィを崩さない。
+Sound toggle は通常の `<button>` 要素として実装する。アクセシビリティと標準的な操作性（キーボード操作・スクリーンリーダー）を優先する。
 
-派手なボタン、アイコン、スライダーは追加しない。
+既存 `.ui` は `pointer-events:none` のため、この button 部分のみ `pointer-events:auto` とする。
 
-v1.0では音量スライダーは不要。
+見た目は既存タイポグラフィに合わせ、`background` / `border` / `padding` をリセットして周囲のモノスペース行と同一の外観にする。派手なボタン、アイコン、スライダーは追加しない。
+
+v1.1 でも音量スライダーは不要。
+
+### SPACE キーとの競合を防ぐ（必須）
+
+既存の HOLD は `window` レベルの `keydown` で `e.code === 'Space'` を捕捉している。
+
+button はフォーカスを保持するため、**対策なしでは SOUND をクリックした後に SPACE を押すと、HOLD と SOUND が同時にトグルされる。**
+
+対策として、**HOLD 側のハンドラに「interactive element にフォーカスがある場合は発火しない」ガードを入れる**（AC-16）。
+
+```text
+SPACE 押下
+  ↓
+フォーカスが button / a / input / select / textarea
+または contenteditable にあるか？
+  ├─ Yes → HOLD を発火しない（button 本来の動作に委ねる）
+  └─ No  → 従来どおり paused をトグル
+```
+
+button 側をフォーカス不可にする方式（`tabindex` 除去など）は採用しない。アクセシビリティを損なうため。
+
+### その他
+
+- タップ時のテキスト選択を防ぐため `user-select:none` を指定する。
+- 状態は `aria-pressed` で表現する。
+- 既存レイアウト・タイポグラフィを崩さない。
 
 ---
 
@@ -642,6 +786,14 @@ HOLD ≠ stop audio
 
 とする。
 
+### 実装上の含意（v1.1 追記）
+
+`paused` は `phase` の進行のみを止める。したがって `curTau` / `curSig` / `curSt` / `curChaos` が自動的に凍結し、§5.2 の独立パスはそれらを読むだけなので、**音響ターゲット値の凍結に特別な処理は不要**である。
+
+ただし既存コードでは `root.rotation` が `elapsedTime` 駆動のため、HOLD 中もオブジェクトは回転し続ける。P2 の定位（§15）は HOLD 中も追従して動くことになるが、画面上のオブジェクトが実際に回転している以上、視聴覚一致としてはそちらが正しい。Phase 5 で最終確認する。
+
+SPACE キー押下時のフォーカスガードについては §13.2 を参照。
+
 ---
 
 # 15. Orbit連動 — P2
@@ -676,12 +828,15 @@ camera right vector
 
 ## 16.1 Audio
 
-- voice数：原則8
+- voice数：8固定（4クラス × 2モード）
 - AudioNodeを毎フレーム生成しない
-- Sound OFF時は不要処理を停止
+- Sound OFF時は不要処理を停止（`tick()` 先頭で即 return、fade完了後に `ctx.suspend()`）
 - 毎フレームのArray/Object allocationを最小化
-- 幾何メトリクス抽出は既存計算を再利用
+- 幾何メトリクスは **`update()` とは独立した読み取り専用パスで 25 Hz** で算出する（§5.2）
+- 静的テーブル（辺クラス分類・面インデックス）はモデルごとに初回1回のみ構築
 - パラメータ更新をsmooth化
+
+v1.0 の「幾何メトリクス抽出は既存計算を再利用」は**無効**とする（§5.2 の変更理由を参照）。独立パスの実測コストは約 10k 演算/秒であり、再利用による節約より描画側の無副作用を優先する。
 
 ## 16.2 Visual
 
@@ -712,8 +867,11 @@ Master Gainは低めから開始する。
 - sudden gain jump防止
 - sudden frequency jump防止
 - Sound ON/OFFに短いfadeを入れる
-- Master段にDynamicsCompressorNode等を配置
+- **Voice Mix の直後にリミッター設定の DynamicsCompressorNode を置き、その後段の Master Gain でフェードする**（§11）
 - 初回ON時に大音量を出さない
+- AudioParam へ非有限値を渡さない（§18 / AC-15）
+
+v1.0 の「Master段にDynamicsCompressorNode等を配置」は、Compressor が Master Gain の後段であることを含意していたため**無効**とする。正しい接続順は §11 を参照。
 
 目標：
 
@@ -733,13 +891,37 @@ Sound OFF
 
 - `AudioContext` が利用できない
 - Audio initialization failure
-- AudioContext resume failure
+- AudioContext resume failure（Promise の reject を必ず catch する）
 - StereoPanner非対応
 - その他Audio node生成エラー
 
 エラーによって`frame()`を停止しない。
 
 Sound機能はWebGL描画から疎結合にする。
+
+初期化に失敗した場合は内部フラグを立て、UI を `SOUND — N/A` に戻して以後の音響処理を行わない（§13）。
+
+## 18.1 非有限値の防御（v1.1 新設・必須）
+
+`f = f0 · (L_ref / L)` は `L → 0` で Infinity になる。そして **`L` が厳密に 0 になる状態が実際に存在する。**
+
+```text
+τ = 0    → クラスB（頂点図形の辺）が 0
+τ = 0.5  → クラスA（原辺上の切り残し）が 0
+```
+
+これは異常系ではなく、シーケンスが必ず通過する正常な状態である（Icosahedron / Dodecahedron / Icosidodecahedron）。
+
+**AudioParam へ Infinity / NaN を渡した場合、例外が投げられるか、ノードが NaN を出力し続けてグラフ全体が恒久的に無音化する。** 一度この状態になるとコンテキストを作り直すまで復帰しない。
+
+したがって以下を必須とする。
+
+1. AudioParam へ値を設定する直前に `Number.isFinite()` で検査する。
+2. 非有限または下限未満の場合、**周波数は直前の有効値を保持**し、更新しない。
+3. 当該クラスの gain を 0 へフェードする（§4.2）。
+4. gain の復帰も、長さが下限を超えた時点からフェードで行う。
+
+長さ 0 への退化は、切頂そのものの聴覚化として意図された挙動である。τ が 0 から増えるにつれてクラスB が無音からフェードインし、τ が 0.5 へ向かうにつれてクラスA がフェードアウトする。
 
 ---
 
@@ -787,8 +969,9 @@ Sound機能追加と、
 12. Sonification
     - Audio state
     - Voice creation
-    - Geometry metrics
-    - Frequency clustering
+    - Static class tables      （§23。モデルごとに初回1回）
+    - Geometry metrics         （25Hz 読み取り専用パス。§5.2）
+    - Class → voice mapping    （長さ降順の静的割当。§23.5）
     - Parameter mapping
     - Audio update
     - Sound toggle
@@ -806,90 +989,256 @@ Sound機能追加と、
 
 ```js
 const SOUND = {
-  enabled: false,
-  ctx: null,
-  master: null,
-  compressor: null,
-  voices: [],
-  metrics: null,
-  lastUpdate: 0
+  enabled:    false,   // ユーザーが ON にしているか
+  failed:     false,   // 初期化に失敗した（§18）。true 以降は何もしない
+  ctx:        null,
+  mix:        null,    // Voice Mix
+  comp:       null,    // Compressor（limiter設定）
+  master:     null,    // Master Gain（fade用。Compressor の後段）
+  voices:     [],      // 8。各 { osc, gain, filter, pan, lastFreq }
+  classes:    [],      // 4。§23 の A / B / C / D。各 { len, spread, weight }
+  lastUpdate: 0        // 25Hz スロットリング用
 };
 ```
 
 必要以上にグローバル状態を増やさない。
 
----
-
-# 22. Geometry → Audio変換フロー
+`voices[i]` と幾何クラスの対応は静的とする（§24）。
 
 ```text
-M.update(tau, sigma, st, chaos)
-        ↓
-current geometry
-        ↓
-audioMetrics
-  ├─ representative lengths
-  ├─ areas
-  ├─ centers
-  └─ normals
-        ↓
-cluster / normalize
-        ↓
-8 modal frequencies
-        ↓
-σ / s / chaos modulation
-        ↓
-parameter smoothing
-        ↓
-Web Audio nodes
-        ↓
-sound
+voice 0,1 → クラス0    voice 2,3 → クラス1
+voice 4,5 → クラス2    voice 6,7 → クラス3
 ```
 
 ---
 
-# 23. クラスタリング
+# 22. Geometry → Audio変換フロー
 
-辺長をそのまま8本選択するのではなく、似た長さをまとめる。
+v1.1 のフロー。`M.update()` は音響へ関与せず、音響は状態変数のみを読む。
 
-目的：
+```text
+applySequence(dt)
+   ├─→ M.update(tau, sigma, st, chaos)   ← 描画。音響コードなし
+   └─→ curTau / curSig / curSt / curChaos / curM を更新
+                    │
+                    │  frame() が 25Hz でスロットリングして呼ぶ
+                    ↓
+          SOUND.tick()（読み取り専用）
+                    ↓
+   curM.base.V + curM.K（静的） + curTau + curSt
+                    ↓
+             P[60] を再計算（inset 適用前）
+                    ↓
+   §23 の静的分類テーブルで幾何クラス A / B / C / D を集計
+     ├─ len    代表長
+     ├─ spread クラス内の min/max 幅（s ≠ 1 で拡がる）
+     └─ weight 面積または本数による重み
+                    ↓
+        長さ降順でクラス0〜3へ整列（kind index を使わない）
+                    ↓
+      f = f0 · (L_ref / L)  ×  2モード = 8 voice
+                    ↓
+          σ / s / chaos によるモジュレーション
+                    ↓
+       非有限値チェック + 退化クラスの gain fade（§18.1）
+                    ↓
+      parameter smoothing（setTargetAtTime）
+                    ↓
+                Web Audio nodes
+                    ↓
+                  sound
+```
 
-- 同じ長さの辺が大量に存在する正多面体で不要な重複voiceを作らない
-- 形が崩れる途中では微妙な長さ差が徐々に分離する
-- 安定形では共鳴モードが自然に収束する
+---
 
-実装手法はClaude側で選定可。
+# 23. 幾何クラス分類（v1.1 全面改訂）
 
-ただし、
+**v1.0 の「ランタイム辺長クラスタリング」は廃止する。** 本章がその置換であり、v1.0 §23 の記述は無効とする。
 
-- deterministic
-- 軽量
-- 毎回同じ形なら同じ結果
-- フレームごとのvoice順序入替を抑える
+## 23.1 v1.0 方式が成立しない理由
 
-こと。
+### 理由1 — 正多面体では辺長が均一
 
-Voice indexが毎更新で入れ替わり、周波数が飛ぶ実装は禁止。
+正則・準正則多面体は**定義上すべての辺長が等しい**。したがって辺長クラスタリングは、シーケンス中の名前付き安定形（＝音が最も豊かであるべき状態）で常に1〜2クラスタへ退化し、8モードを構成できない。
+
+### 理由2 — 位相が完全に静的
+
+`truncation()` が生成する `pairs` と `faces` は τ / σ / s に依存しない。動くのは頂点座標だけである。したがって分類はコンパイル時に確定でき、ランタイムでクラスタリングする必要がない。静的分類は定義上 deterministic であり、voice 順序の入替が原理的に起こらない。
+
+## 23.2 静的な辺分類
+
+`truncation()` の構造から、辺はちょうど2種類に分かれる。
+
+```text
+pairs[i]  = 有向辺 (v,w) に対応する切頂頂点   … 60本（= 2E。ico系・dod系とも）
+
+クラスA「原辺上の切り残し」
+    idx(a,b) ─ idx(b,a)  を結ぶ辺            … 30本（= E）
+    長さ L_A = |1 − 2τ| · a₀
+    τ = 0.5 で 0 に退化
+
+クラスB「頂点図形の辺」
+    idx(v,w) ─ idx(v,w′)  を結ぶ辺
+    （w, w′ は nbrs[v] 上で隣接）              … 60本
+    長さ L_B = 2τ · a₀ · sin(θ/2)
+    θ = 頂点における稜線間角度
+        ico 基底: θ = 60°    dod 基底: θ = 108°
+    τ = 0 で 0 に退化
+
+合計 90本 = 切頂多面体の辺数（V60 − E90 + F32 = 2）に一致
+```
+
+`a₀` は基底多面体の辺長。中半径を1に正規化しているため `a₀(ico) = 2/φ = 1.23607`、`a₀(dod) = 0.76393`。
+
+## 23.3 静的な面分類
+
+```text
+クラスC : kind = 0 の面（元の面由来の 2m 角形）
+クラスD : kind = 1 の面（頂点図形）
+```
+
+各クラスの代表長は、**面中心から apex を経由した頂点までの距離**とする。
+
+```text
+L_C = Rf₀ · √(1 + σ²)
+L_D = Rf₁ · √(1 + σ²)
+
+Rf = 面中心から面頂点までの最大距離（inset 適用前）
+```
+
+σ = 0 では `√(1+σ²) = 1` となり単なる面の外接半径に一致するため、σ に関して連続である。σ > 0 では角錐の側稜そのものになる。これは実際に描画されている辺であり、σ の効果が幾何量として音へ入る。
+
+## 23.4 s ≠ 1 の扱い
+
+`M = diag(s^{−1/2}, s, s^{−1/2})` は等長変換ではないため、s ≠ 1 では同一クラス内の合同性が崩れ、長さが分布する。
+
+```text
+方向ごとのスケール係数の範囲 : [ s^{−1/2} , s ]
+    s = 2.00 → [0.70711, 2.00000]   比 2.828 (= s^{3/2})
+    s = 0.46 → [0.46000, 1.47442]   比 3.205 (= 1/s^{3/2})
+```
+
+各クラスについて次を保持する。
+
+| 値 | 定義 | 用途 |
+|---|---|---|
+| `len` | クラス内の長さの（面積または本数で重み付けした）**幾何平均** | 代表周波数 |
+| `spread` | クラス内の max/min 比 | detune 幅・スペクトル幅（§6.3） |
+| `weight` | 面積合計または本数 | voice gain |
+
+`det M = 1` により方向スケール係数の対数和が 0 になるため、**幾何平均長は s の変化でほとんど動かない。** これにより §6.3 が要求する「音域中心を保ったままスペクトル幅だけが伸縮する」が自動的に成立する。
+
+### prolate と oblate の区別
+
+s = 2.00（col）と s = 0.46（obl）は max/min 比が近い（2.828 と 3.205）ため、幅だけでは区別が弱い。両者は**分布の偏り**で区別される。
+
+```text
+prolate (s>1)  : xz 方向へ 0.707 倍。大半の辺が縮む
+                 → 代表音域が上がり、少数の低い成分が伸びる
+
+oblate  (s<1)  : xz 方向へ 1.474 倍。大半の辺が伸びる
+                 → 代表音域が下がり、少数の高い成分が現れる
+```
+
+幾何平均と spread を素直に算出すればこの差は自然に出る。AC-05 の検証時はこの2状態を重点的に確認する（§26）。
+
+## 23.5 クラス → voice スロットの割当
+
+4クラス × 2モード = 8 voice。第2モードの比は面の多角形次数から導く非整数比とし、§9 の「ガラス／金属／膜／結晶」的な音色に寄与させる。
+
+**クラスを `kind` index へ固定してはならない。**
+
+区間1→2 の base 切替（`SEGS[1]` の `b:'ico'` → `SEGS[2]` の `b:'dod'`）では、幾何は同一の二十・十二面体でありながら kind の役割が反転する。
+
+```text
+ico 基底 τ=0.5 : kind=0 → 三角形 ,  kind=1 → 五角形
+dod 基底 τ=0.5 : kind=0 → 五角形 ,  kind=1 → 三角形
+```
+
+`kind` index で voice スロットを固定すると、この境界で voice が瞬間的に別周波数へ飛ぶ。
+
+**割当規則：4クラスを長さの降順に整列し、その順にクラス0〜3として voice スロットへ固定する。**
+
+この規則が安全である理由は、クラスの順序交差が必ず「両クラスの長さが一致する点」で起きるためである。
+
+```text
+L_A = L_B となる τ  = 正則切頂の条件そのもの
+    ico 基底 : τ = 1/3        （Truncated Icosahedron）
+    dod 基底 : τ = 1/(2+φ)    （Truncated Dodecahedron）
+```
+
+順序が入れ替わる瞬間に両者の周波数は等しいため、可聴なジャンプが発生しない。また base 切替点（τ=0.5）では ico 基底・dod 基底のいずれも `L_A = 0`、`L_B = id の辺長` となり完全に連続である。
+
+## 23.6 代表周波数（実測値・正規リファレンス）
+
+`f = 110 · (1.2361 / L)` による、s = 1 の各状態の値。
+
+| 状態 | クラスA | クラスB | クラスC | クラスD |
+|---|---|---|---|---|
+| Icosahedron | **110.0 Hz** | 0（無音） | 190.5 Hz | 0（無音） |
+| Truncated Icosahedron | 330.0 Hz | 330.0 Hz | 330.0 Hz | 388.0 Hz |
+| Icosidodecahedron | 0（無音） | 220.0 Hz | 381.1 Hz | 258.6 Hz |
+| Truncated Dodecahedron | 398.0 Hz | 398.0 Hz | 246.0 Hz | 689.3 Hz |
+| Dodecahedron | 178.0 Hz | 0（無音） | 209.2 Hz | 0（無音） |
+| Small Stellated Dodecahedron | 178.0 Hz | 0（無音） | **110.0 Hz** | 0（無音） |
+
+affine 変形状態（spn / col / obl）は上記の値を中心に、23.4 の係数範囲で分布する。
+
+### この表から読み取れる設計上の含意
+
+- **ti / td では A・B・C が同一周波数へ収束する。** これは正則切頂＝一様多面体であることの直接の帰結であり、純度の高いユニゾンとして §7「安定形では共鳴が収束」を満たす。重複 voice の除去は行わず、gain 正規化（§P1-7）で音量だけを整える。
+- **τ → 0 でクラスB が、τ → 0.5 でクラスA が無音へフェードする。** 切頂そのものが聴覚化される（AC-06）。
+- **Dodecahedron → Small Stellated Dodecahedron では、クラスC が 209.2 Hz → 110.0 Hz へ連続的に降下する。** σ による専用プリセットを持たずに AC-05 と §8 を満たす。なお SSD の側稜長 1.23607 は正二十面体の辺長と厳密に一致する（φ · a₀(dod) = 2/φ）。
+- 個別 voice の最高周波数は、s = 0.46（obl）のクラスD 端で約 1.5 kHz、第2モードを含めて約 2.4 kHz に達する。**v1.0 が想定した 1760 Hz の上限で clamp すると、最も特徴的な状態でちょうど clamp が作動して形態差が潰れる。** これも hard clamp を廃止した理由である（§4.2）。
+
+## 23.7 遵守事項
+
+- deterministic であること（`Math.random()` を使わない。§25）
+- 軽量であること
+- 同じ形なら常に同じ結果になること
+- **voice index が更新ごとに入れ替わらないこと**
+
+Voice index が毎更新で入れ替わり、周波数が飛ぶ実装は禁止。
 
 ---
 
 # 24. Voice tracking
 
-形態変化中、クラスタ数や順序が変わっても各voiceが突然別周波数へジャンプしないようにする。
+形態変化中、各voiceが突然別周波数へジャンプしないようにする。音響品質上、ここは重要。
 
-推奨：
+## 24.1 v1.1 の方式
+
+**voice スロットは §23.5 の静的な割当規則で固定されるため、v1.0 が要求した nearest-frequency matching は不要である。**
 
 ```text
-previous modes
-↓
-nearest-frequency matching
-↓
-new modes
+voice 0,1 → 長さ降順クラス0    voice 2,3 → クラス1
+voice 4,5 → クラス2            voice 6,7 → クラス3
 ```
 
-または同等の安定化処理。
+クラス数は常に4で変動しない。順序交差は両クラスの長さが一致する点でのみ起こる（§23.5）。したがってフレーム間で voice が担当する周波数は連続である。
 
-音響品質上、ここは重要。
+v1.0 §24 の「previous modes → nearest-frequency matching → new modes」は**不要**として廃止する。
+
+## 24.2 ジャンプを起こしうる箇所と対策
+
+静的割当でもなお不連続が生じうる箇所は次の3つ。いずれも対策を必須とする。
+
+| # | 箇所 | 対策 |
+|---|---|---|
+| 1 | base 切替（`SEGS[1]` → `SEGS[2]`、ico→dod）での kind 反転 | クラスを `kind` index へ固定せず長さ降順で整列する（§23.5） |
+| 2 | クラス長が 0 へ退化（τ=0 / τ=0.5） | 周波数を更新せず直前値を保持し、gain を 0 へフェード（§18.1） |
+| 3 | 非有限値（Infinity / NaN）の混入 | AudioParam へ渡す直前に `Number.isFinite()` 検査（§18.1 / AC-15） |
+
+## 24.3 平滑化
+
+周波数・gain とも瞬間切替を禁止し、Web Audio automation で平滑化する（§12）。
+
+```text
+frequency : setTargetAtTime(target, ctx.currentTime, 0.08)   時定数 約80ms
+gain      : setTargetAtTime(target, ctx.currentTime, 0.05)   時定数 約50ms
+```
+
+1区間の遷移は約 3.84 秒（`SEG_DUR` 6.4秒 × 0.60）であり、上記の時定数で追従しつつ滑らかになる。
 
 ---
 
@@ -927,15 +1276,27 @@ Sound ON後、現在の多面体形状から音がリアルタイム生成され
 
 ## AC-05
 
-少なくとも以下の状態間で聴覚的な差が確認できる。
+シーケンス上の名前付き状態すべてで、隣接状態と聴覚的な差が確認できる。
 
 - Icosahedron
 - Truncated Icosahedron
 - Icosidodecahedron
+- Truncated Dodecahedron
 - Dodecahedron
 - Small Stellated Dodecahedron
 - Prolate Stellation
+- Prolate Truncated Dodecahedron
 - Oblate Truncated Dodecahedron
+
+v1.1 で `Truncated Dodecahedron` と `Prolate Truncated Dodecahedron` を追加した（v1.0 では欠落）。形態ごとの追加音域正規化を廃止した（§4.2）主たる根拠がこの受入条件であるため、リストは網羅されている必要がある。
+
+### 重点確認ペア
+
+| ペア | 差が出る理由 | 難易度 |
+|---|---|---|
+| Dodecahedron ↔ Small Stellated Dodecahedron | クラスC が 209.2 → 110.0 Hz へ降下（§23.6） | 易 |
+| Icosahedron ↔ Dodecahedron | 基音 110.0 Hz ↔ 178.0 Hz | 易 |
+| **Prolate Truncated D. ↔ Oblate Truncated D.** | τ・σ が同一で s のみ異なる（2.00 / 0.46）。spread 比が近いため、分布の偏り（§23.4）でのみ区別される | **難。最重点** |
 
 ## AC-06
 
@@ -973,11 +1334,29 @@ Audio初期化失敗時でもWebGL描画は停止しない。
 
 Sound追加前後で既存Shader・Geometry・Caption・Ring・Piece・Cameraの表示結果を意図的に変更していない。
 
+照合基準は Phase 0 で保存した visual baseline スクリーンショットとする（§28）。
+
+## AC-15
+
+`τ = 0`（Icosahedron / Dodecahedron）および `τ = 0.5`（Icosidodecahedron）を通過しても、Infinity / NaN による無音化・例外が発生しない。
+
+通過後も全 voice が正常に復帰する（§18.1）。
+
+## AC-16
+
+SOUND トグルをクリックした直後に SPACE を押しても、SOUND が再トグルされない。
+
+HOLD は従来どおり動作する（§13.2）。
+
+## AC-17
+
+ビューポート幅 680px 以下でも SOUND トグルが表示され、タップで ON / OFF できる（§13）。
+
 ---
 
 # 27. 非目標
 
-v1.0では以下を行わない。
+v1.1でも以下を行わない。
 
 - MIDI
 - Web MIDI API
@@ -1000,53 +1379,78 @@ v1.0では以下を行わない。
 
 # 28. 実装フェーズ
 
-## Phase 0 — 保護
+## Phase 0 — 保護 ✅ 完了
 
-1. 現在のHTMLをgit commit。
-2. Sound追加前の動作を保存。
-3. visual baselineのスクリーンショットを保存。
-4. Sound branchまたは明確なcommit単位で作業。
+1. ✅ 現在のHTMLをgit commit。
+2. ✅ Sound追加前の動作を保存。
+3. ✅ visual baselineのスクリーンショットを保存。
+4. ✅ Sound branchまたは明確なcommit単位で作業。
+
+実施結果：
+
+```text
+main                 32dc038   Sound追加前の visual baseline（ロールバック先）
+feature/sonification 2cc1f98   polyhedra_transfiguration (4).html → index.html
+```
+
+`.backup-YYYYMMDD` コピーは作成しない。git の初期コミットがバックアップを兼ねる。
+
+### baseline FPS 計測について（v1.1 変更）
+
+**baseline FPS の計測は Phase 0 の必須項目としない。**
+
+AC-14 が要求する描画差分の検証は、Phase 0 で保存した visual baseline スクリーンショットで足りる。FPS は Phase 4 の性能確認において、体感上の差が疑われた場合にのみ計測する。
+
+計測する場合もHTMLへ計測コードを埋め込まず、ブラウザの開発者ツールで行う。
 
 ## Phase 1 — Audio skeleton
 
-1. AudioContext
-2. Master Gain
-3. Compressor
-4. 8 voices
-5. Sound ON/OFF
-6. fade in/out
+1. SOUND UI（`<button>`、`pointer-events:auto`、モバイル表示、`aria-pressed`）— §13
+2. SPACE HOLD のフォーカスガード — §13.2 / AC-16
+3. AudioContext（`webkitAudioContext` フォールバック、ユーザージェスチャ内で生成）
+4. Voice Mix → Compressor → Master Gain → Destination — §11
+5. 8 voices
+6. Sound ON/OFF、fade in/out、OFF完了後の `ctx.suspend()`
+7. 初期化失敗時のフォールバック — §18
 
-この段階では固定周波数でもよい。
+この段階では固定周波数でよい。
+
+検証：AC-01 / AC-02 / AC-10 / AC-12 / AC-13 / AC-14 / AC-16 / AC-17
 
 ## Phase 2 — Geometry metrics
 
-1. current geometryから辺長候補を取得
-2. clustering
-3. frequency mapping
-4. voice tracking
-5. smoothing
+1. `curChaos` の公開（既存コードへの2行の変更のうち1行）— §2
+2. 25Hz の独立した読み取り専用パスを `frame()` から呼ぶ — §5.2 / §12
+3. 静的分類テーブル（辺クラスA/B、面クラスC/D）をモデルごとに初回1回構築 — §23
+4. クラス代表長・spread・weight の算出 — §23.4
+5. 長さ降順の整列と voice スロット固定 — §23.5
+6. `f = f0 · (L_ref / L)` による周波数写像 — §4.2
+7. 非有限値防御と退化クラスの gain fade — §18.1
+8. smoothing — §24.3
 
 ここで「形が鳴る」状態にする。
 
+検証：AC-04 / AC-05 / AC-06 / AC-15
+
 ## Phase 3 — Transformation mapping
 
-1. `σ`
-2. `s`
-3. `chaos`
+1. `σ` — brightness / filter cutoff / 非整数倍音（§6.2）
+2. `s` — spread → detune 幅・スペクトル幅（§6.3 / §23.4）
+3. `chaos` — micro-detune / beating / inharmonicity（§6.4）
 
-を音色へ反映。
+検証：AC-07 / AC-08 / AC-09
 
 ## Phase 4 — Polish
 
-1. gain normalization
+1. gain normalization（ti / td のユニゾン収束時の音量を含む）
 2. filter調整
 3. transition調整
 4. browser確認
-5. performance確認
+5. performance確認（必要に応じて baseline FPS を計測）
 
 ## Phase 5 — Optional spatialization
 
-Orbit連動を追加。
+Orbit連動を追加（§15）。HOLD 中の挙動を §14 で確認する。
 
 ---
 
@@ -1057,12 +1461,14 @@ Orbit連動を追加。
 主に以下。
 
 ```text
-HTML UI
-JavaScript
-Web Audio initialization
-buildModel / update周辺のaudioMetrics取得
-frame loop内のaudio update
+HTML UI            SOUND button の追加
+CSS                #snd 用ルール、680px以下での表示制御
+JavaScript         Sonification セクションの新設（独立ブロック）
+Web Audio          initialization / graph / voices
+既存JS 3箇所       curChaos 公開 / frame() からの呼び出し / SPACE フォーカスガード（§2）
 ```
+
+v1.0 が挙げていた「buildModel / update周辺のaudioMetrics取得」は、独立した読み取り専用パスへ変更したため**影響範囲から外れる**（§5.2）。`buildModel()` と `M.update()` は無変更。
 
 ## 変更しない範囲
 
@@ -1087,9 +1493,11 @@ Sound実装は既存描画から疎結合にする。
 ロールバック可能条件：
 
 1. Sound関連コードを削除または無効化すれば元のWebGL作品へ戻れる。
-2. Geometry計算の本体ロジックはSound用に書き換えない。
-3. Sound用metrics追加は描画座標へ副作用を持たせない。
+2. Geometry計算の本体ロジックはSound用に書き換えない。`buildModel()` / `M.update()` は無変更（§2 / §5.2）。
+3. Sound用metrics取得は読み取り専用とし、描画座標へ副作用を持たせない。
 4. git上でSound導入前commitへ戻せる状態で作業する。
+
+ロールバック先は `main` の **`32dc038`**（Phase 0 の visual baseline）。
 
 ---
 
@@ -1128,15 +1536,34 @@ Sound実装は既存描画から疎結合にする。
 
 # 33. Claudeへの引き継ぎ事項
 
-この要件定義を実装する場合、最初に既存HTML全体を読み、以下を確認してから変更する。
+既存HTML全体の確認は **v1.1 時点で完了済み**。以下は確認結果であり、実装時に再確認する必要はない。
 
-1. `buildModel()` 内のGeometry生成フロー
-2. `update(tau, sigma, st, chaos)` 内で利用可能な幾何情報
-3. `applySequence(dt)` の `u / chaos / tau / sig / st`
-4. `frame()` の更新順
-5. `.ui` の `pointer-events:none`
-6. 既存の `SPACE — HOLD`
-7. Shader / Caption / Ring / Pieceへの副作用がないこと
+| # | 確認項目 | 結果 |
+|---|---|---|
+| 1 | `buildModel()` の Geometry 生成フロー | `topology` → `truncation` → 固定長 TypedArray 確保 → `update()` クロージャ。`pairs`(60) と `faces`(32) は τ/σ/s に依らず静的 |
+| 2 | `update()` 内で利用可能な幾何情報 | `P[]`・面ごとの `C` / `N` / `Rf` / `Q[]` / `AP`・`A`,`B`・`maxR`。ただし v1.1 では利用しない（§5.2） |
+| 3 | `applySequence(dt)` の `u / chaos / tau / sig / st` | `u` は raw 0.20→0.80 を smootherstep。両端に各20%（1.28秒）の静止区間。`chaos = sin(πu)`。`s` は対数線形補間。`chaos` のみ module スコープに未公開 |
+| 4 | `frame()` の更新順 | `applySequence` → caption → ring → piece → camera → `updateRing` → RT描画 → コンポジット |
+| 5 | `.ui` の `pointer-events:none` | 確認。加えて **`.br` は `max-width:680px` で `display:none`**（§13 で対応） |
+| 6 | 既存の `SPACE — HOLD` | `window` レベルの `keydown`。`paused` は `phase` の進行のみ停止。`elapsedTime` と `root.rotation` は継続（§14） |
+| 7 | Shader / Caption / Ring / Piece への副作用 | §5.2 の読み取り専用パスにより構造的に副作用なし |
+
+### 実装時の必読章
+
+v1.0 から方式が変わっている章があるため、実装前に以下を読むこと。
+
+```text
+§2     接続点と既存コードへの変更3箇所
+§4.2   周波数式（clamp廃止・形態別正規化廃止）
+§5.2   独立した読み取り専用パス
+§11    Audio Graph の接続順
+§13.2  button とフォーカスガード
+§18.1  非有限値の防御
+§23    幾何クラス分類（v1.0 のクラスタリングを全面置換）
+§24    voice スロットの静的割当
+```
+
+### 原則
 
 **既存ビジュアルを「改善」しない。**
 
