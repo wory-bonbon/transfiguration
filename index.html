@@ -757,7 +757,7 @@ const SEGS=[
 ];
 const SEG_DUR=6.4;
 let phase=0, dir=1, paused=false, objRadius=1.30, lockAmt=1, scrollOff=0;
-let curM=null, curTau=0, curSig=0, curSt=1;
+let curM=null, curTau=0, curSig=0, curSt=1, curChaos=0;
 const smoother=x=>x*x*x*(x*(x*6-15)+10);
 const elTau=document.getElementById('tau');
 
@@ -782,7 +782,7 @@ function applySequence(dt){
   root.scale.setScalar(k);
   objRadius=M.radius()*k;
   filmMat.uniforms.uChaos.value=chaos;
-  curM=M; curTau=tau; curSig=sig; curSt=st;
+  curM=M; curTau=tau; curSig=sig; curSt=st; curChaos=chaos;
 
   lockAmt = smoother(Math.min(1, Math.max(0, 1 - 5.5*Math.min(u, 1-u))));
   const key=(u<0.5)?g.fk:g.tk;
@@ -845,11 +845,12 @@ addEventListener('keydown', e=>{ if(e.code==='Space'){
   e.preventDefault(); paused=!paused; } });
 
 /* ---------- 12. Sonification ---------------------------------------------
-   Phase 1 — Audio skeleton（要件定義書 v1.1 §11 §13 §17 §18 §21 §28）
-     · 固定周波数の暫定音のみ。幾何メトリクスは Phase 2 で接続する。
+   Phase 2 — Geometry metrics（要件定義書 v1.1 §4.2 §5.2 §18.1 §21〜§24 §28）
+     · 現在描画中の多面体の実座標 → 幾何クラス A/B/C/D → 代表長 → 8 voice
+     · M.update() には一切触れず、25Hz の独立した読み取り専用パスで算出する
      · Voices → Mix → Compressor → MasterGain → Destination
-     · AudioNode は初期化時に1回だけ生成し、以後は再生成しない。
-     · 既存の描画コードからは完全に疎結合。frame() へのフックも Phase 2 まで無し。
+     · AudioNode は初期化時に1回だけ生成し、以後は再生成しない
+     · σ / s は「実際の幾何長が変わる」経路でのみ音に効く。chaos は Phase 3
    ------------------------------------------------------------------------- */
 const SOUND = {
   enabled:false,   /* ユーザーが ON にしているか */
@@ -858,13 +859,23 @@ const SOUND = {
   mix    :null,    /* Voice Mix        */
   comp   :null,    /* Compressor（limiter設定） */
   master :null,    /* Master Gain（fade用。Compressor の後段） */
-  voices :[]       /* 8。{ osc, gain, filter } */
+  voices :[],      /* 8。{ osc, gain, filter, last } */
+  lastUpdate:0,    /* 25Hz スロットリング（ctx.currentTime 基準） */
+  primed :false    /* 初回は瞬時設定、以後は smoothing */
 };
 const SND_MASTER = 0.16;   /* Master Gain 上限。低めから開始する（§17） */
 const SND_FADE   = 0.20;   /* fade in / out 秒（§17: 100〜300ms） */
-/* Phase 1 暫定の固定周波数。Phase 2 で幾何クラス由来の値へ置き換える（§23） */
-const SND_HZ = [110.0, 165.0, 220.0, 275.0, 330.0, 385.0, 440.0, 495.0];
-const SND_G  = [ 0.90,  0.62,  0.48,  0.36,  0.28,  0.21,  0.16,  0.12];
+const SND_F0     = 110.0;  /* 基準周波数（§4.2） */
+const SND_LREF   = 1.2361; /* 基準長。中半径1の正二十面体の辺長（§4.2） */
+const SND_DT     = 1/25;   /* Audio metrics 更新間隔 秒（§12） */
+const SND_TC_F   = 0.08;   /* frequency の時定数（§24.3） */
+const SND_TC_G   = 0.05;   /* gain の時定数（§24.3） */
+const SND_EPS    = 1e-4;   /* 退化長のしきい値（§18.1） */
+const SND_WBAND  = 0.02;   /* 退化長を重み0へ落とすなめらかな帯幅（モデル座標） */
+const SND_GBASE  = 2.0;    /* voice gain 係数。最終正規化は Phase 4 */
+const SND_M2     = 0.5;    /* 第2モードの相対音量。最終調整は Phase 4 */
+/* 可聴域外は clamp せず gain をフェードする（§4.2） */
+const SND_FLO = 3000, SND_FHI = 6000, SND_FMINF = 45, SND_FMIN = 26;
 
 const sndBtn = document.getElementById('snd');
 let sndSuspendTimer = 0;
@@ -902,14 +913,220 @@ function sndInit(){
   const voices = [];
   for(let i=0;i<8;i++){
     const osc = ctx.createOscillator();  osc.type = 'sine';
-    osc.frequency.value = SND_HZ[i];
-    const g = ctx.createGain();          g.gain.value = SND_G[i];
-    const f = ctx.createBiquadFilter();  f.type='lowpass'; f.frequency.value=2400; f.Q.value=0.7;
+    osc.frequency.value = SND_F0;         /* 実値は初回 sndTick() が設定する */
+    const g = ctx.createGain();          g.gain.value = 0;
+    /* 固定の安全ロールオフのみ。σ 連動 cutoff は Phase 3 */
+    const f = ctx.createBiquadFilter();  f.type='lowpass'; f.frequency.value=5000; f.Q.value=0.7;
     osc.connect(g); g.connect(f); f.connect(mix);
     osc.start();                          /* 以後 stop しない。再生成もしない */
-    voices.push({osc:osc, gain:g, filter:f});
+    voices.push({osc:osc, gain:g, filter:f, last:0});
   }
   SOUND.ctx=ctx; SOUND.mix=mix; SOUND.comp=comp; SOUND.master=master; SOUND.voices=voices;
+  SOUND.primed=false; SOUND.lastUpdate=0;
+}
+
+/* --- 幾何クラス A/B/C/D -------------------------------------------------
+   A : 原辺上の切り残し辺（30本）        τ=0.5 で 0 へ退化
+   B : 頂点図形の辺（60本）              τ=0   で 0 へ退化
+   C : kind=0 面（元の面由来の 2m 角形）
+   D : kind=1 面（頂点図形）
+   第1モード長 : A/B = 辺長、C/D = apex から面頂点までの距離
+   第2モード長 : A/B = その辺を含む各面の中心→辺中点距離（apothem）
+                 C/D = apex から辺中点までの距離
+   いずれも現在の変形後座標から実測する。s≠1 でも固定式に頼らない。
+   ---------------------------------------------------------------------- */
+const SND_CLS = [];
+for(let i=0;i<4;i++) SND_CLS.push({
+  key:'ABCD'.charAt(i),
+  L1:{n:0,s:0,mn:0,mx:0}, L2:{n:0,s:0,mn:0,mx:0},
+  len:SND_LREF, len2:SND_LREF, raw:0, spread:1, weight:0
+});
+const sndOrd  = [0,1,2,3];   /* 第1モード長の降順 */
+const sndOrd2 = [0,1,2,3];   /* 第2モード長の降順 */
+function accReset(a){ a.n=0; a.s=0; a.mn=Infinity; a.mx=0; }
+/* 退化長は「除外」ではなく重み 0 へなめらかに落とす。
+   閾値で出し入れすると、退化辺が閾値をまたぐ瞬間に集計母集団が階段状に変わり、
+   他の voice の周波数が跳ぶ（実測で最大 935 cent）。 */
+function accAdd(a,v,w){
+  if(!(v>0) || !isFinite(v)) return;
+  if(w===undefined) w=sndSmooth(v/SND_WBAND);
+  if(!(w>0)) return;
+  a.n+=w; a.s+=w*Math.log(v);
+  if(w>0.5){ if(v<a.mn)a.mn=v; if(v>a.mx)a.mx=v; }
+}
+function accLen(a){ return a.n>1e-6 ? Math.exp(a.s/a.n) : 0; }     /* 重み付き幾何平均 */
+function accSpread(a){ return (a.n>1e-6 && a.mn>0 && a.mx>0) ? a.mx/a.mn : 1; }
+
+/* 位相は τ/σ/s に依らず静的なので、分類はモデルごとに初回1回だけ作る（§23） */
+function sndTables(M){
+  if(M.__snd) return M.__snd;
+  const K=M.K, pairs=K.pairs, faces=K.faces, kind=K.kind, n=pairs.length;
+  const idx=new Map();
+  for(let i=0;i<n;i++) idx.set(pairs[i][0]+','+pairs[i][1], i);
+  const aE=[], bE=[], k0=[], k1=[];
+  /* A: (v,w) と (w,v) を結ぶ辺 = 原辺上の切り残し */
+  for(let i=0;i<n;i++){
+    const j=idx.get(pairs[i][1]+','+pairs[i][0]);
+    if(j!==undefined && i<j){ aE.push(i,j); }
+  }
+  for(let fi=0; fi<faces.length; fi++){
+    if(kind[fi]===0){ k0.push(faces[fi]); }
+    else{
+      k1.push(faces[fi]);
+      const f=faces[fi], m=f.length;                /* B: 頂点図形の辺 */
+      for(let i=0;i<m;i++) bE.push(f[i], f[(i+1)%m]);
+    }
+  }
+  M.__snd={ aE:aE, bE:bE, k0:k0, k1:k1, P:new Float64Array(n*3) };
+  return M.__snd;
+}
+/* 描画側 update() の P とは別に、読み取り専用で再計算する。
+   inset / lift / 面回転は入れない（chaos を音程へ漏らさない。§5.2 §6.4） */
+function sndBuildP(M,T){
+  const V=M.base.V, pairs=M.K.pairs, P=T.P, n=pairs.length;
+  const sy=curSt, sxz=1/Math.sqrt(curSt);
+  for(let i=0;i<n;i++){
+    const a=V[pairs[i][0]], b=V[pairs[i][1]], o=i*3;
+    P[o  ]=(a.x+(b.x-a.x)*curTau)*sxz;
+    P[o+1]=(a.y+(b.y-a.y)*curTau)*sy;
+    P[o+2]=(a.z+(b.z-a.z)*curTau)*sxz;
+  }
+}
+function sndEdgeLen(P,i,j){
+  const o=i*3,q=j*3, dx=P[q]-P[o], dy=P[q+1]-P[o+1], dz=P[q+2]-P[o+2];
+  return Math.sqrt(dx*dx+dy*dy+dz*dz);
+}
+/* 面群を走査して、面クラス(cF)の第1・第2モード長と、辺クラスの第2モード長を集める。
+   戻り値は面積合計（weight 用）。 */
+function sndFaceLoop(P, faces, isK0, cA, cB, cF){
+  let area=0;
+  for(let fi=0; fi<faces.length; fi++){
+    const f=faces[fi], m=f.length;
+    let cx=0,cy=0,cz=0;
+    for(let i=0;i<m;i++){ const o=f[i]*3; cx+=P[o]; cy+=P[o+1]; cz+=P[o+2]; }
+    cx/=m; cy/=m; cz/=m;
+    let nx=0,ny=0,nz=0;                                  /* Newell 法線 */
+    for(let i=0;i<m;i++){
+      const o=f[i]*3, q=f[(i+1)%m]*3;
+      nx+=(P[o+1]-P[q+1])*(P[o+2]+P[q+2]);
+      ny+=(P[o+2]-P[q+2])*(P[o]+P[q]);
+      nz+=(P[o]-P[q])*(P[o+1]+P[q+1]);
+    }
+    const nl=Math.sqrt(nx*nx+ny*ny+nz*nz);
+    area += nl*0.5;                                      /* |Newell|/2 = 面積 */
+    let ux=0,uy=0,uz=0;
+    if(nl>1e-12){ ux=nx/nl; uy=ny/nl; uz=nz/nl;
+      if(ux*cx+uy*cy+uz*cz<0){ ux=-ux; uy=-uy; uz=-uz; } }
+    let Rf=0;
+    for(let i=0;i<m;i++){ const o=f[i]*3;
+      const dx=P[o]-cx, dy=P[o+1]-cy, dz=P[o+2]-cz;
+      const d=Math.sqrt(dx*dx+dy*dy+dz*dz); if(d>Rf) Rf=d; }
+    const h=curSig*Rf;                                   /* apex = C + σ·Rf·N */
+    const ax=cx+ux*h, ay=cy+uy*h, az=cz+uz*h;
+    for(let i=0;i<m;i++){ const o=f[i]*3;                /* 第1モード長 */
+      const dx=P[o]-ax, dy=P[o+1]-ay, dz=P[o+2]-az;
+      accAdd(cF.L1, Math.sqrt(dx*dx+dy*dy+dz*dz)); }
+    for(let i=0;i<m;i++){
+      const o=f[i]*3, q=f[(i+1)%m]*3;
+      const ex=P[q]-P[o], ey=P[q+1]-P[o+1], ez=P[q+2]-P[o+2];
+      const ew=sndSmooth(Math.sqrt(ex*ex+ey*ey+ez*ez)/SND_WBAND);   /* 退化辺の重み */
+      if(!(ew>0)) continue;
+      const mx=(P[o]+P[q])*0.5, my=(P[o+1]+P[q+1])*0.5, mz=(P[o+2]+P[q+2])*0.5;
+      accAdd(cF.L2, Math.sqrt((mx-ax)*(mx-ax)+(my-ay)*(my-ay)+(mz-az)*(mz-az)), ew);
+      const apo=Math.sqrt((mx-cx)*(mx-cx)+(my-cy)*(my-cy)+(mz-cz)*(mz-cz));
+      /* kind=0 面では辺が A(偶数位置) / B(奇数位置) と交互に並ぶ */
+      if(isK0) accAdd((i&1)?cB.L2:cA.L2, apo, ew);
+      else     accAdd(cB.L2, apo, ew);
+    }
+  }
+  return area;
+}
+/* 幾何のみ。Audio には触れない（検証しやすいよう sndTick から分離） */
+function sndMetrics(){
+  const T=sndTables(curM), P=T.P;
+  sndBuildP(curM,T);
+  const A=SND_CLS[0], B=SND_CLS[1], C=SND_CLS[2], D=SND_CLS[3];
+  accReset(A.L1); accReset(A.L2); accReset(B.L1); accReset(B.L2);
+  accReset(C.L1); accReset(C.L2); accReset(D.L1); accReset(D.L2);
+
+  for(let e=0;e<T.aE.length;e+=2) accAdd(A.L1, sndEdgeLen(P,T.aE[e],T.aE[e+1]));
+  for(let e=0;e<T.bE.length;e+=2) accAdd(B.L1, sndEdgeLen(P,T.bE[e],T.bE[e+1]));
+  const ar0=sndFaceLoop(P, T.k0, true,  A, B, C);
+  const ar1=sndFaceLoop(P, T.k1, false, A, B, D);
+
+  /* 退化したクラスは len / len2 を「前回値のまま保持」する。0 へ落とすと整列順が
+     階段状に変わり、他 voice の周波数が跳ぶ（実測で 752 cent）。消音は weight 側で行う。 */
+  for(let i=0;i<4;i++){
+    const c=SND_CLS[i];
+    c.raw=accLen(c.L1);
+    const l2=accLen(c.L2);
+    if(c.raw>0) c.len =c.raw;      /* 周波数用 */
+    if(l2   >0) c.len2=l2;
+    c.spread=accSpread(c.L1);
+  }
+  /* weight: 辺群は総辺長比、面群は総面積比。辺:面 = 1:1。
+     退化クラスは raw=0 → weight=0 となり、周波数を動かさずに無音化する。 */
+  const wa=(T.aE.length/2)*A.raw, wb=(T.bE.length/2)*B.raw, se=wa+wb;
+  A.weight = se>0 ? 0.5*wa/se : 0;
+  B.weight = se>0 ? 0.5*wb/se : 0;
+  const sf=ar0+ar1;
+  C.weight = sf>0 ? 0.5*ar0/sf : 0;
+  D.weight = sf>0 ? 0.5*ar1/sf : 0;
+  /* 長さ降順に整列。kind index へは固定しない（§23.5 §24.2）。
+     順序交差は必ず両者の長さが一致する点で起きるため、可聴ジャンプにならない。
+     第2モードは独立に整列する。A と B は正則切頂点で第1モード長が一致するため
+     整列順が入れ替わるが、両者の第2モード長は一致しない。第1モードの順序に
+     第2モードを従わせると、そこで1オクターブ超の跳躍とフリッカーが発生する。 */
+  sndOrd[0]=0;  sndOrd[1]=1;  sndOrd[2]=2;  sndOrd[3]=3;
+  sndOrd2[0]=0; sndOrd2[1]=1; sndOrd2[2]=2; sndOrd2[3]=3;
+  sndOrd.sort (function(x,y){ return SND_CLS[y].len  - SND_CLS[x].len;  });
+  sndOrd2.sort(function(x,y){ return SND_CLS[y].len2 - SND_CLS[x].len2; });
+}
+function sndSmooth(x){ x = x<0?0:(x>1?1:x); return x*x*(3-2*x); }
+function sndGate(f){
+  if(!isFinite(f) || f<=0) return 0;
+  if(f>=SND_FHI || f<=SND_FMIN) return 0;
+  let g=1;
+  if(f>SND_FLO)   g  = sndSmooth((SND_FHI-f)/(SND_FHI-SND_FLO));
+  if(f<SND_FMINF) g *= sndSmooth((f-SND_FMIN)/(SND_FMINF-SND_FMIN));
+  return g;
+}
+/* 退化長は周波数を据え置き gain のみ 0 へ。非有限値は AudioParam へ渡さない（§18.1） */
+function sndApply(v, L, w, mw, t){
+  let f=0;
+  if(L>SND_EPS && isFinite(L)){
+    const x=SND_F0*(SND_LREF/L);
+    if(isFinite(x) && x>0) f=x;
+  }
+  let g=0;
+  if(f>0){ v.last=f; g=SND_GBASE*w*mw*sndGate(f); }
+  let fv=v.last;
+  if(!isFinite(fv) || fv<=0) fv=SND_F0;
+  /* AudioParam の数値安全域。musical な clamp ではない —
+     この範囲へ丸められる voice は sndGate により既に gain 0 になっている */
+  if(fv>20000) fv=20000; else if(fv<10) fv=10;
+  if(!isFinite(g) || g<0) g=0;
+  if(!isFinite(fv) || !isFinite(g)) return;      /* 最終防御 */
+  if(SOUND.primed){
+    v.osc.frequency.setTargetAtTime(fv, t, SND_TC_F);
+    v.gain.gain.setTargetAtTime(g, t, SND_TC_G);
+  }else{
+    v.osc.frequency.setValueAtTime(fv, t);
+    v.gain.gain.setValueAtTime(g, t);
+  }
+}
+function sndTick(){
+  if(!SOUND.enabled || SOUND.failed || !SOUND.ctx || !curM) return;   /* OFF時は何もしない */
+  const ctx=SOUND.ctx, now=ctx.currentTime;
+  if(SOUND.primed && now-SOUND.lastUpdate < SND_DT) return;           /* 25Hz */
+  SOUND.lastUpdate=now;
+  sndMetrics();
+  for(let k=0;k<4;k++){
+    const c1=SND_CLS[sndOrd[k]];                 /* 偶数 voice = 第1モード */
+    sndApply(SOUND.voices[2*k],   c1.len,  c1.weight, 1.0,    now);
+    const c2=SND_CLS[sndOrd2[k]];                /* 奇数 voice = 第2モード */
+    sndApply(SOUND.voices[2*k+1], c2.len2, c2.weight, SND_M2, now);
+  }
 }
 /* 現在値から連続に繋いでランプする。瞬間切替を行わない（§17 / AC-10） */
 function sndRamp(target){
@@ -931,7 +1148,10 @@ function setSound(on){
 
   if(on){
     clearTimeout(sndSuspendTimer);
-    const go = ()=>{ if(SOUND.enabled) sndRamp(SND_MASTER); };
+    /* ON の瞬間は現在の幾何へ瞬時に合わせる（master gain 0 のため無音のうちに確定）*/
+    const go = ()=>{ if(!SOUND.enabled) return;
+                     SOUND.primed=false; sndTick(); SOUND.primed=true;
+                     sndRamp(SND_MASTER); };
     if(ctx.state === 'suspended' && ctx.resume){
       let p; try{ p = ctx.resume(); }catch(err){ sndFail(err); return; }
       if(p && p.then) p.then(go, err=>sndFail(err)); else go();
@@ -956,6 +1176,7 @@ function frame(){
   requestAnimationFrame(frame);
   const dt=Math.min(0.05, clock.getDelta()), t=clock.elapsedTime;
   applySequence(dt);
+  sndTick();          /* 内部で 25Hz スロットリング。Sound OFF 時は即 return */
 
   const capY = OBJ_Y - objRadius - 0.30 - CAP_WORLD_H*0.5;
   capSprite.position.y += (capY - capSprite.position.y)*0.09;
