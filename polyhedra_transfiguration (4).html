@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>TRANSFIGURATION — 多面体変相</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#04060a;}
+  canvas{display:block;position:fixed;inset:0;z-index:0;touch-action:none;}
+  .ui{position:fixed;z-index:10;pointer-events:none;
+      font-family:"Helvetica Neue",Inter,"Hiragino Sans",sans-serif;
+      -webkit-font-smoothing:antialiased;}
+  .tl{top:26px;left:28px;color:#cfe2ee;}
+  .tl h1{font-size:12px;font-weight:600;letter-spacing:.42em;color:#eaf6ff;}
+  .tl p{margin-top:7px;font-size:9.5px;letter-spacing:.30em;color:#5d7488;}
+  .tr{top:26px;right:28px;text-align:right;
+      font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:10px;
+      letter-spacing:.18em;color:#7fa8bf;line-height:1.9;}
+  .tr b{color:#ffffff;font-weight:500}
+  .br{bottom:26px;right:28px;text-align:right;
+      font-family:ui-monospace,"SF Mono",Menlo,monospace;
+      font-size:9px;letter-spacing:.18em;color:#3d4f5e;line-height:1.9;}
+  .rule{position:fixed;z-index:10;background:rgba(120,170,200,.09);pointer-events:none}
+  .rule.h{left:28px;right:28px;height:1px}
+  .rule.v{top:26px;bottom:26px;width:1px}
+  @media (max-width:680px){
+    .tl{left:18px} .tr,.br{right:18px} .rule.h{left:18px;right:18px} .br{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="rule h" style="top:26px"></div>
+<div class="rule h" style="bottom:26px"></div>
+<div class="rule v" style="left:28px"></div>
+<div class="rule v" style="right:28px"></div>
+
+<div class="ui tl">
+  <h1>TRANSFIGURATION</h1>
+  <p>CANONICAL TRUNCATION SEQUENCE / 多面体変相</p>
+</div>
+<div class="ui tr" id="tau">τ <b>0.000</b>　σ <b>0.000</b>　s <b>1.000</b></div>
+<div class="ui br">
+  DRAG — ORBIT<br>SCROLL — DOLLY<br>SPACE — HOLD
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+if (typeof THREE === 'undefined') {
+  document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"><\/script>');
+}
+</script>
+<script>
+if (typeof THREE === 'undefined') {
+  document.body.insertAdjacentHTML('beforeend',
+    '<div style="position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;'
+    + 'color:#8fb4c8;font:12px/2 ui-monospace,monospace;letter-spacing:.15em;text-align:center">'
+    + 'THREE.JS LOAD FAILED<br>three.min.js をローカルに置いて script src を差し替えてください。</div>');
+}
+</script>
+<script>
+/* =========================================================================
+   TRANSFIGURATION — 多面体変相
+     p(v,w) = M·( v + τ(w−v) )   apex = C + σ·R_f·N   M = diag(s^-1/2,s,s^-1/2)
+   ========================================================================= */
+const V3 = THREE.Vector3;
+const PHI = (1 + Math.sqrt(5)) / 2;
+
+/* ---------- 1. 多面体 ----------------------------------------------------- */
+function fixWinding(V,F){
+  const n=new V3(), c=new V3();
+  for(const f of F){
+    n.set(0,0,0); c.set(0,0,0);
+    for(let i=0;i<f.length;i++){
+      const p=V[f[i]], q=V[f[(i+1)%f.length]];
+      n.x+=(p.y-q.y)*(p.z+q.z); n.y+=(p.z-q.z)*(p.x+q.x); n.z+=(p.x-q.x)*(p.y+q.y);
+      c.add(p);
+    }
+    if(n.dot(c)<0) f.reverse();
+  }
+}
+function icosahedron(){
+  const raw=[[0,1,PHI],[0,1,-PHI],[0,-1,PHI],[0,-1,-PHI],
+             [1,PHI,0],[1,-PHI,0],[-1,PHI,0],[-1,-PHI,0],
+             [PHI,0,1],[-PHI,0,1],[PHI,0,-1],[-PHI,0,-1]];
+  const V = raw.map(p=>new V3(p[0],p[1],p[2]));
+  const n=V.length, d2=(a,b)=>V[a].distanceToSquared(V[b]);
+  let min=Infinity;
+  for(let i=0;i<n;i++)for(let j=i+1;j<n;j++) min=Math.min(min,d2(i,j));
+  const isE=(a,b)=>Math.abs(d2(a,b)-min)<1e-6;
+  const F=[];
+  for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)for(let k=j+1;k<n;k++)
+    if(isE(i,j)&&isE(j,k)&&isE(i,k)) F.push([i,j,k]);
+  fixWinding(V,F); return {V,F};
+}
+function topology(P){
+  const {V,F}=P, dirFace=new Map();
+  F.forEach((f,fi)=>{ for(let i=0;i<f.length;i++) dirFace.set(f[i]+','+f[(i+1)%f.length],fi); });
+  const nextIn=(fi,v)=>{ const f=F[fi]; return f[(f.indexOf(v)+1)%f.length]; };
+  const start=V.map(()=>-1);
+  F.forEach((f,fi)=>f.forEach(v=>{ if(start[v]<0) start[v]=fi; }));
+  const nbrs=[], fcyc=[];
+  V.forEach((_,v)=>{
+    const nb=[], fc=[]; let fi=start[v], g=0;
+    do{ fc.push(fi); const w=nextIn(fi,v); nb.push(w); fi=dirFace.get(w+','+v); }
+    while(fi!==start[v] && ++g<24);
+    nbrs.push(nb); fcyc.push(fc);
+  });
+  return {nbrs,fcyc};
+}
+function dual(P,T){
+  const V=P.F.map(f=>{ const c=new V3(); f.forEach(i=>c.add(P.V[i]));
+                       return c.divideScalar(f.length).normalize(); });
+  const F=T.fcyc.map(fc=>fc.slice());
+  fixWinding(V,F); return {V,F};
+}
+function normalizeMidradius(P){
+  const seen=new Set(); let s=0,n=0;
+  for(const f of P.F) for(let i=0;i<f.length;i++){
+    const a=f[i], b=f[(i+1)%f.length], k=Math.min(a,b)+'_'+Math.max(a,b);
+    if(seen.has(k)) continue; seen.add(k);
+    s += P.V[a].clone().add(P.V[b]).multiplyScalar(0.5).length(); n++;
+  }
+  P.V.forEach(v=>v.multiplyScalar(n/s)); return P;
+}
+function truncation(P,T){
+  const idx=new Map(), pairs=[];
+  P.V.forEach((_,v)=>T.nbrs[v].forEach(w=>{ idx.set(v+','+w,pairs.length); pairs.push([v,w]); }));
+  const faces=[], kind=[];
+  P.F.forEach(f=>{ const p=[];
+    for(let i=0;i<f.length;i++){ const a=f[i], b=f[(i+1)%f.length];
+      p.push(idx.get(a+','+b), idx.get(b+','+a)); }
+    faces.push(p); kind.push(0); });
+  P.V.forEach((_,v)=>{ faces.push(T.nbrs[v].map(w=>idx.get(v+','+w))); kind.push(1); });
+  const S=pairs.map(pr=>P.V[pr[0]].clone().lerp(P.V[pr[1]],0.25));
+  fixWinding(S,faces);
+  return {faces,kind,pairs};
+}
+
+/* ---------- 2. 描画モデル ------------------------------------------------ */
+const INSET=0.905;
+function buildModel(base){
+  const T=topology(base), K=truncation(base,T), nP=K.pairs.length;
+  let tri=0, seg=0; K.faces.forEach(f=>{ tri+=f.length; seg+=f.length; });
+  const pos=new Float32Array(tri*9), nor=new Float32Array(tri*9);
+  const aRim=new Float32Array(tri*3), aType=new Float32Array(tri*3);
+  const lpos=new Float32Array(seg*6), ppos=new Float32Array(nP*3);
+  { let o=0; K.faces.forEach((f,fi)=>{ for(let i=0;i<f.length;i++){
+      aRim[o]=1; aRim[o+1]=0; aRim[o+2]=0;
+      aType[o]=aType[o+1]=aType[o+2]=K.kind[fi]; o+=3; } }); }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('normal',  new THREE.BufferAttribute(nor,3));
+  g.setAttribute('aRim',    new THREE.BufferAttribute(aRim,1));
+  g.setAttribute('aType',   new THREE.BufferAttribute(aType,1));
+  const gl=new THREE.BufferGeometry();
+  gl.setAttribute('position',new THREE.BufferAttribute(lpos,3));
+  const gp=new THREE.BufferGeometry();
+  gp.setAttribute('position',new THREE.BufferAttribute(ppos,3));
+
+  const P=[]; for(let i=0;i<nP;i++) P.push(new V3());
+  const Q=[]; for(let i=0;i<12;i++) Q.push(new V3());
+  const C=new V3(), N=new V3(), tmp=new V3(), rot=new V3(),
+        AP=new V3(), e1=new V3(), e2=new V3(), tn=new V3();
+  let maxR=0;
+
+  function update(tau, sigma, st, chaos){
+    const pairs=K.pairs, faces=K.faces;
+    const sy=st, sxz=1/Math.sqrt(st);
+    maxR=0;
+    for(let i=0;i<nP;i++){
+      const a=base.V[pairs[i][0]], b=base.V[pairs[i][1]];
+      P[i].set((a.x+(b.x-a.x)*tau)*sxz, (a.y+(b.y-a.y)*tau)*sy, (a.z+(b.z-a.z)*tau)*sxz);
+      ppos[i*3]=P[i].x; ppos[i*3+1]=P[i].y; ppos[i*3+2]=P[i].z;
+      maxR=Math.max(maxR,P[i].length());
+    }
+    const inset=INSET-0.115*chaos, lift=0.115*chaos, th=0.34*chaos;
+    const cs=Math.cos(th), sn=Math.sin(th);
+    let o=0, lo=0;
+    for(let fi=0; fi<faces.length; fi++){
+      const f=faces[fi], m=f.length;
+      C.set(0,0,0); for(let i=0;i<m;i++) C.add(P[f[i]]); C.divideScalar(m);
+      N.set(0,0,0);
+      for(let i=0;i<m;i++){ const p=P[f[i]], q=P[f[(i+1)%m]];
+        N.x+=(p.y-q.y)*(p.z+q.z); N.y+=(p.z-q.z)*(p.x+q.x); N.z+=(p.x-q.x)*(p.y+q.y); }
+      if(N.lengthSq()<1e-12) N.copy(C);
+      N.normalize(); if(N.dot(C)<0) N.negate();
+      const cx=C.x+N.x*lift, cy=C.y+N.y*lift, cz=C.z+N.z*lift;
+      while(Q.length<m) Q.push(new V3());
+      let Rf=0;
+      for(let i=0;i<m;i++){
+        tmp.subVectors(P[f[i]],C).multiplyScalar(inset);
+        rot.crossVectors(N,tmp);
+        Q[i].set(cx+tmp.x*cs+rot.x*sn, cy+tmp.y*cs+rot.y*sn, cz+tmp.z*cs+rot.z*sn);
+        Rf=Math.max(Rf, tmp.length());
+      }
+      AP.set(cx+N.x*sigma*Rf, cy+N.y*sigma*Rf, cz+N.z*sigma*Rf);
+      maxR=Math.max(maxR, AP.length());
+      for(let i=0;i<m;i++){
+        const A=Q[i], B=Q[(i+1)%m];
+        e1.subVectors(A,AP); e2.subVectors(B,AP);
+        tn.crossVectors(e1,e2);
+        if(tn.lengthSq()<1e-14) tn.copy(N); else {
+          tn.normalize();
+          if(tn.x*(AP.x+A.x+B.x)+tn.y*(AP.y+A.y+B.y)+tn.z*(AP.z+A.z+B.z) < 0) tn.negate();
+        }
+        pos[o]=AP.x; pos[o+1]=AP.y; pos[o+2]=AP.z;
+        pos[o+3]=A.x; pos[o+4]=A.y; pos[o+5]=A.z;
+        pos[o+6]=B.x; pos[o+7]=B.y; pos[o+8]=B.z;
+        for(let j=0;j<3;j++){ nor[o+j*3]=tn.x; nor[o+j*3+1]=tn.y; nor[o+j*3+2]=tn.z; }
+        o+=9;
+        lpos[lo]=A.x; lpos[lo+1]=A.y; lpos[lo+2]=A.z;
+        lpos[lo+3]=B.x; lpos[lo+4]=B.y; lpos[lo+5]=B.z;
+        lo+=6;
+      }
+    }
+    g.attributes.position.needsUpdate=true; g.attributes.normal.needsUpdate=true;
+    gl.attributes.position.needsUpdate=true; gp.attributes.position.needsUpdate=true;
+    g.computeBoundingSphere();
+  }
+  return {geom:g, lineGeom:gl, pointGeom:gp, update, radius:()=>maxR, K, base};
+}
+
+/* 代表面を 1 枚ずつ取り出して 2D に開く（piece 表示用） */
+function facePieces(M, tau, sigma, st){
+  const K=M.K, base=M.base, sy=st, sxz=1/Math.sqrt(st);
+  const P=K.pairs.map(pr=>{
+    const a=base.V[pr[0]], b=base.V[pr[1]];
+    return new V3((a.x+(b.x-a.x)*tau)*sxz,(a.y+(b.y-a.y)*tau)*sy,(a.z+(b.z-a.z)*tau)*sxz);
+  });
+  const out=[];
+  [0,1].forEach(kind=>{
+    const fi=K.kind.indexOf(kind); if(fi<0) return;
+    const f=K.faces[fi], m=f.length;
+    const C=new V3(); f.forEach(i=>C.add(P[i])); C.divideScalar(m);
+    const N=new V3();
+    for(let i=0;i<m;i++){ const p=P[f[i]], q=P[f[(i+1)%m]];
+      N.x+=(p.y-q.y)*(p.z+q.z); N.y+=(p.z-q.z)*(p.x+q.x); N.z+=(p.x-q.x)*(p.y+q.y); }
+    if(N.lengthSq()<1e-12) return;
+    N.normalize(); if(N.dot(C)<0) N.negate();
+    /* 重複頂点を畳む（τ=0 / 0.5 で 2n 角形が n 角形へ退化する） */
+    const raw=[];
+    for(let i=0;i<m;i++){
+      const q=P[f[i]].clone().sub(C).multiplyScalar(INSET);
+      if(raw.length===0 || q.distanceTo(raw[raw.length-1])>1e-5) raw.push(q);
+    }
+    if(raw.length>1 && raw[0].distanceTo(raw[raw.length-1])<1e-5) raw.pop();
+    if(raw.length<3) return;
+    let Rf=0; raw.forEach(q=>Rf=Math.max(Rf,q.length()));
+    let pts;
+    if(sigma>1e-3){                      /* 星形時の実際の構成面＝角錐の側面三角形 */
+      const ap=N.clone().multiplyScalar(sigma*Rf);
+      pts=[ap, raw[0], raw[1]];
+    } else pts=raw;
+    /* 面内の直交基底へ射影 */
+    const o=new V3(); pts.forEach(p=>o.add(p)); o.divideScalar(pts.length);
+    let ex=null;
+    for(let i=0;i<pts.length && !ex;i++){
+      const d=pts[(i+1)%pts.length].clone().sub(pts[i]);
+      if(d.lengthSq()>1e-8) ex=d.normalize();
+    }
+    if(!ex) return;
+    const nn=pts.length===3
+      ? pts[1].clone().sub(pts[0]).cross(pts[2].clone().sub(pts[0])).normalize()
+      : N.clone();
+    const ey=nn.clone().cross(ex).normalize();
+    let p2=pts.map(p=>{ const d=p.clone().sub(o); return [d.dot(ex), d.dot(ey)]; });
+    /* 向きの正準化：反時計回りに揃え、第1頂点を真上に固定する */
+    let A2=0;
+    for(let i=0;i<p2.length;i++){ const a=p2[i], b=p2[(i+1)%p2.length];
+      A2 += a[0]*b[1] - b[0]*a[1]; }
+    if(A2<0) p2=p2.map(q=>[q[0], -q[1]]);
+    const th0=Math.atan2(p2[0][1], p2[0][0]), rr=Math.PI/2-th0;
+    const cr=Math.cos(rr), sr=Math.sin(rr);
+    p2=p2.map(q=>[q[0]*cr-q[1]*sr, q[0]*sr+q[1]*cr]);
+    out.push(p2);
+  });
+  return out;
+}
+
+/* ---------- 3. 共通シェーダ関数（GLSL 断片） ------------------------------ */
+const GLSL_LIB = `
+vec3 thinFilm(float cosI, float d){
+  float n = 1.42;
+  float cosT = sqrt(max(1.0 - (1.0 - cosI*cosI)/(n*n), 0.0));
+  float delta = 2.0 * n * d * cosT;
+  return 0.5 - 0.5*cos(6.2831853*delta/vec3(612.0,549.0,464.0) + 3.1415927);
+}
+float lobe(vec3 R, vec3 L, float p){ return pow(max(dot(R, normalize(L)), 0.0), p); }
+vec3 pearlSky(vec3 R, float t){
+  float h = R.y*0.5 + 0.5;
+  float drift = 0.5*sin(R.x*2.4 + t*0.19) + 0.5*sin(R.z*2.9 - t*0.15);
+  float v = clamp(h + drift*0.14, 0.0, 1.0);
+  vec3 c =      vec3(1.00,0.88,0.79);
+  c = mix(c, vec3(1.00,0.82,0.87), smoothstep(0.02,0.24,v));
+  c = mix(c, vec3(0.86,0.81,1.00), smoothstep(0.22,0.44,v));
+  c = mix(c, vec3(0.73,0.90,1.00), smoothstep(0.42,0.62,v));
+  c = mix(c, vec3(0.80,1.00,0.95), smoothstep(0.60,0.80,v));
+  c = mix(c, vec3(1.00,0.98,0.93), smoothstep(0.78,1.00,v));
+  float curtain = pow(max(sin(v*8.0 + drift*1.7 + t*0.30), 0.0), 1.5);
+  float veil    = pow(max(sin(v*3.0 - t*0.10), 0.0), 1.2);
+  float horizon = exp(-pow(R.y*5.5, 2.0));
+  return c * (0.40 + 0.68*curtain + 0.28*veil) + vec3(0.85,0.90,1.0)*horizon*0.22;
+}
+vec3 specular(vec3 R){
+  vec3 s = vec3(0.0);
+  s += vec3(1.00,0.98,0.95) * lobe(R, vec3( 0.32, 0.88, 0.35), 1400.0) * 5.2;
+  s += vec3(0.92,0.96,1.00) * lobe(R, vec3(-0.72, 0.26, 0.64),  320.0) * 1.9;
+  s += vec3(1.00,0.90,0.86) * lobe(R, vec3( 0.12,-0.74,-0.66),  160.0) * 1.2;
+  s += vec3(0.95,1.00,0.98) * lobe(R, vec3(-0.15, 0.10,-0.98), 2600.0) * 3.4;
+  return s;
+}`;
+
+const FILM_VS = `
+attribute float aRim; attribute float aType;
+varying vec3 vN; varying vec3 vW; varying float vRim; varying float vType;
+void main(){
+  vec4 wp = modelMatrix * vec4(position,1.0);
+  vW = wp.xyz;
+  vN = normalize(mat3(modelMatrix) * normal);
+  vRim = aRim; vType = aType;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+const FILM_FS = `
+precision highp float;
+uniform float uTime, uChaos;
+varying vec3 vN; varying vec3 vW; varying float vRim; varying float vType;
+` + GLSL_LIB + `
+void main(){
+  vec3 N = normalize(vN);
+  vec3 V = normalize(cameraPosition - vW);
+  if(!gl_FrontFacing) N = -N;
+  float ndv  = clamp(dot(N,V), 0.0, 1.0);
+  float fres = 0.05 + 0.95*pow(1.0-ndv, 5.0);
+  vec3  R    = reflect(-V, N);
+  float d = 330.0 + 145.0*sin(vW.y*2.0 + vW.x*0.9 + uTime*0.16)
+                  +  90.0*sin(vW.z*3.2 - uTime*0.11)
+                  +  50.0*vType + 55.0*uChaos;
+  vec3 film = mix(vec3(1.0), thinFilm(ndv, d), 0.62);
+  vec3 sky  = pearlSky(R, uTime);
+  vec3 spec = specular(R) * film;
+  vec3 col  = film * sky * 1.80 + sky * fres * 0.60 + film * 0.09;
+  col += spec * (0.30 + 0.70*fres);
+  float edge = pow(1.0 - vRim, 10.0);
+  col += vec3(1.00,0.96,0.94) * edge * (0.22 + 0.55*uChaos);
+  float sl = dot(spec, vec3(0.2126,0.7152,0.0722));
+  float a = clamp(0.075 + 0.55*fres + 0.40*edge + 0.30*min(sl,1.0), 0.0, 1.0);
+  gl_FragColor = vec4(col, a);
+}`;
+
+/* piece：平面だがわずかにドーム状の法線を与えてハイライトを走らせる */
+const PIECE_VS = `
+attribute vec2 aLoc;
+varying vec2 vLoc; varying vec3 vN; varying vec3 vW;
+void main(){
+  vLoc = aLoc;
+  vec3 n = normalize(vec3(aLoc.x*1.25, aLoc.y*1.25, 1.0));
+  vN = normalize(mat3(modelMatrix) * n);
+  vec4 wp = modelMatrix * vec4(position,1.0);
+  vW = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+const PIECE_FS = `
+precision highp float;
+uniform float uTime, uOpacity, uTop, uBot;
+varying vec2 vLoc; varying vec3 vN; varying vec3 vW;
+` + GLSL_LIB + `
+void main(){
+  if(vLoc.y > uTop || vLoc.y < uBot) discard;
+  vec3 N = normalize(vN);
+  vec3 V = normalize(cameraPosition - vW);
+  if(!gl_FrontFacing) N = -N;
+  float ndv  = clamp(dot(N,V), 0.0, 1.0);
+  float fres = 0.05 + 0.95*pow(1.0-ndv, 5.0);
+  vec3  R    = reflect(-V, N);
+  float d = 330.0 + 150.0*sin(vLoc.x*2.6 + vLoc.y*1.9 + uTime*0.42);
+  vec3 film = mix(vec3(1.0), thinFilm(ndv, d), 0.62);
+  vec3 sky  = pearlSky(R, uTime);
+  vec3 spec = specular(R) * film;
+  vec3 col  = film * sky * 1.80 + sky * fres * 0.60 + film * 0.09;
+  col += spec * (0.30 + 0.70*fres);
+  float eT = exp(-abs(vLoc.y-uTop)*70.0);
+  float eB = exp(-abs(vLoc.y-uBot)*70.0);
+  col += vec3(0.86,0.94,1.00) * (eT+eB) * 0.42;
+  float sl = dot(spec, vec3(0.2126,0.7152,0.0722));
+  float a = clamp(0.40 + 0.34*fres + 0.28*min(sl,1.0) + 0.45*(eT+eB), 0.0, 1.0) * uOpacity;
+  gl_FragColor = vec4(col, a);
+}`;
+
+const TEXT_VS = `
+varying vec2 vUv; varying vec3 vN; varying vec3 vW;
+void main(){ vUv=uv; vN=normal; vW=position;
+  gl_Position = projectionMatrix * viewMatrix * vec4(position,1.0); }`;
+const TEXT_FS = `
+precision highp float;
+uniform sampler2D tText; uniform float uOpacity; uniform float uOffset; uniform float uFlat;
+varying vec2 vUv; varying vec3 vN; varying vec3 vW;
+void main(){
+  vec4 c = texture2D(tText, vec2(vUv.x + uOffset, vUv.y));
+  float f = dot(normalize(vN), normalize(cameraPosition - vW));
+  float face = mix(smoothstep(-0.02, 0.34, f), 1.0, uFlat);
+  float a = c.a * uOpacity * face;
+  if(a < 0.004) discard;
+  gl_FragColor = vec4(vec3(1.0), a);
+}`;
+
+const SCAN_VS = `varying vec2 vUv; void main(){ vUv=uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
+const SCAN_FS = `
+precision highp float; uniform float uOpacity; varying vec2 vUv;
+void main(){
+  float g = exp(-pow((vUv.y-0.5)*9.5, 2.0));
+  float ends = smoothstep(0.0,0.06,vUv.x)*smoothstep(1.0,0.94,vUv.x);
+  gl_FragColor = vec4(vec3(0.84,0.93,1.00), g*ends*uOpacity);
+}`;
+
+const QUAD_VS = `varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.0,1.0); }`;
+const COMP_FS = `
+precision highp float;
+uniform sampler2D tBase; uniform float uTime; uniform vec2 uRes;
+varying vec2 vUv;
+vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0.0, 1.0); }
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+void main(){
+  vec3 base = texture2D(tBase, vUv).rgb;
+  float r = length((vUv-0.5)*vec2(uRes.x/uRes.y,1.0));
+  vec3 bg = mix(vec3(0.052,0.050,0.062), vec3(0.004,0.004,0.008), smoothstep(0.05,0.95,r));
+  bg += vec3(0.030,0.028,0.036) * pow(max(1.0-r*1.35,0.0), 3.0);
+  vec3 col = bg + base;
+  col = aces(col * 1.04);
+  col *= 1.0 - 0.40*smoothstep(0.35,1.05,r);
+  col += (hash(vUv*uRes + fract(uTime)*137.0) - 0.5) * 0.028;
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+/* ---------- 4. セットアップ ---------------------------------------------- */
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+renderer.autoClear = false;
+document.body.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, innerWidth/innerHeight, 0.1, 200);
+scene.add(camera);                       /* camera の子（piece HUD）を描画させる */
+const root   = new THREE.Group();
+scene.add(root);
+const OBJ_Y = 0.45, TARGET_R = 1.30, RING_K = 1.36;
+root.position.y = OBJ_Y;
+
+const ico = normalizeMidradius(icosahedron());
+const dod = normalizeMidradius(dual(ico, topology(ico)));
+
+const filmMat = new THREE.ShaderMaterial({
+  vertexShader:FILM_VS, fragmentShader:FILM_FS, side:THREE.DoubleSide,
+  transparent:true, depthWrite:false, depthTest:false,
+  blending:THREE.CustomBlending, blendSrc:THREE.SrcAlphaFactor, blendDst:THREE.OneFactor,
+  uniforms:{ uTime:{value:0}, uChaos:{value:0} }
+});
+const lineMat = new THREE.LineBasicMaterial({ color:0xfff0ea, transparent:true, opacity:0.26,
+  blending:THREE.AdditiveBlending, depthWrite:false, depthTest:false });
+const pointMat = new THREE.PointsMaterial({ color:0xfff6f0, size:0.018, sizeAttenuation:true,
+  transparent:true, opacity:0.62, blending:THREE.AdditiveBlending, depthWrite:false, depthTest:false });
+
+function makeModel(base){
+  const M=buildModel(base);
+  M.group=new THREE.Group();
+  M.group.add(new THREE.Mesh(M.geom, filmMat),
+              new THREE.LineSegments(M.lineGeom, lineMat),
+              new THREE.Points(M.pointGeom, pointMat));
+  root.add(M.group); return M;
+}
+const MODEL = { ico: makeModel(ico), dod: makeModel(dod) };
+
+/* ---------- 5. 形態と数式 ------------------------------------------------ */
+const TI=1/3, TD=1/(2+PHI), SP=2.00, SO=0.46;
+const FORMS = {
+  ico:{ name:'Icosahedron', jp:'正二十面体', sch:'{3,5}  ·  3.3.3.3.3', eqs:[
+        'V = ( 0, ±1, ±φ ) の巡回置換    φ = (1+√5)⁄2',
+        'V − E + F = 12 − 30 + 20 = 2',
+        'R = (a⁄4)·√(10 + 2√5) ≈ 0.9511 a'] },
+  ti :{ name:'Truncated Icosahedron', jp:'切頂二十面体', sch:'t{3,5}  ·  5.6.6', eqs:[
+        'τ = 1⁄3      正六角形条件 :  1 − 2τ = τ',
+        'V − E + F = 60 − 90 + 32 = 2',
+        'R = (a⁄4)·√(58 + 18√5) ≈ 2.4780 a'] },
+  id :{ name:'Icosidodecahedron', jp:'二十・十二面体', sch:'r{3,5}  ·  3.5.3.5', eqs:[
+        'τ = 1⁄2      整凸形 :  p(v,w) = p(w,v)',
+        'V − E + F = 30 − 60 + 32 = 2',
+        'R = φ · a ≈ 1.6180 a'] },
+  td :{ name:'Truncated Dodecahedron', jp:'切頂十二面体', sch:'t{5,3}  ·  3.10.10', eqs:[
+        'τ = 1⁄(2+φ) = (5−√5)⁄10 ≈ 0.27639',
+        'V − E + F = 60 − 90 + 32 = 2',
+        'R = (a⁄4)·√(74 + 30√5) ≈ 2.9694 a'] },
+  dod:{ name:'Dodecahedron', jp:'正十二面体', sch:'{5,3}  ·  5.5.5', eqs:[
+        'V = ( ±1, ±1, ±1 ) ∪ ( 0, ±φ⁻¹, ±φ ) の巡回置換',
+        'V − E + F = 20 − 30 + 12 = 2',
+        'R = (√3⁄2)·φ·a ≈ 1.4013 a'] },
+  ssd:{ name:'Small Stellated Dodecahedron', jp:'小星形十二面体', sch:'{5/2, 5}  ·  kD', eqs:[
+        'apex = C + σ·R_f·N ,    σ = φ ≈ 1.61803',
+        '側稜 = φ·a  →  三角形が5枚ずつ同一平面 = 五芒星面 {5/2}',
+        'V − E + F = 12 − 30 + 12 = −6      ( 密度 3 )'] },
+  spn:{ name:'Prolate Stellation', jp:'紡錘状星形', sch:'M · kD ,   det M = 1', eqs:[
+        'M = diag( s^(−1⁄2), s, s^(−1⁄2) ) ,    s = 2.00',
+        'アフィン変換は平面を平面に写す → 面は平面のまま',
+        'R_y ⁄ R_xz = s^(3⁄2) ≈ 2.828'] },
+  col:{ name:'Prolate Truncated Dodecahedron', jp:'柱状 切頂十二面体', sch:'M · t{5,3}', eqs:[
+        'τ = 1⁄(2+φ) ,    s = 2.00 ,    σ = 0',
+        'R_y ⁄ R_xz = s^(3⁄2) ≈ 2.828',
+        'V − E + F = 60 − 90 + 32 = 2      ( 位相は不変 )'] },
+  obl:{ name:'Oblate Truncated Dodecahedron', jp:'扁平 切頂十二面体', sch:'M · t{5,3}', eqs:[
+        'τ = 1⁄(2+φ) ,    s = 0.46 ,    σ = 0',
+        'R_y ⁄ R_xz = s^(3⁄2) ≈ 0.312',
+        'det M = 1      ( 体積保存 )'] },
+};
+/* piece は「名前が付いた状態」の値で固定する（遷移中の値では作らない） */
+const PIECE_STATE = {
+  ico:{b:'ico', t:0,   g:0,   s:1 },
+  ti :{b:'ico', t:TI,  g:0,   s:1 },
+  id :{b:'ico', t:0.5, g:0,   s:1 },
+  td :{b:'dod', t:TD,  g:0,   s:1 },
+  dod:{b:'dod', t:0,   g:0,   s:1 },
+  ssd:{b:'dod', t:0,   g:PHI, s:1 },
+  spn:{b:'dod', t:0,   g:PHI, s:SP},
+  col:{b:'dod', t:TD,  g:0,   s:SP},
+  obl:{b:'dod', t:TD,  g:0,   s:SO},
+};
+const RING_TEXT =
+  'p(v,w) = M · ( v + τ ( w − v ) )     ·     apex = C + σ · R_f · N     ·     '
++ 'M = diag( s^(−1⁄2),  s,  s^(−1⁄2) ) ,  det M = 1     ·     τ ∈ [ 0 , 1⁄2 ]   σ ≥ 0   s > 0     ·     ';
+
+/* ---------- 6. 数式プレート（正面ビルボード） ----------------------------- */
+const CAP_W=1600, CAP_H=452, CAP_WORLD_W=2.85;
+const CAP_WORLD_H = CAP_WORLD_W*CAP_H/CAP_W;
+function makeCaptionTexture(F){
+  const c=document.createElement('canvas'); c.width=CAP_W; c.height=CAP_H;
+  const x=c.getContext('2d');
+  const LS=v=>{ try{ x.letterSpacing=v; }catch(e){} };
+  x.textAlign='center'; x.textBaseline='alphabetic';
+  let y=60;
+  x.fillStyle='#ffffff';
+  x.font='200 58px "Helvetica Neue",Arial,"Hiragino Sans",sans-serif'; LS('0.06em');
+  x.fillText(F.name, CAP_W/2, y); y+=40;
+  x.fillStyle='rgba(226,222,232,0.80)';
+  x.font='300 25px "Hiragino Sans","Yu Gothic",sans-serif'; LS('0.34em');
+  x.fillText(F.jp, CAP_W/2, y); y+=42; LS('0px');
+  x.strokeStyle='rgba(255,255,255,0.18)'; x.lineWidth=1;
+  x.beginPath(); x.moveTo(CAP_W/2-330,y-16); x.lineTo(CAP_W/2+330,y-16); x.stroke(); y+=30;
+  x.fillStyle='#ffffff';
+  x.font='400 42px "STIX Two Math","Cambria Math",Georgia,"Times New Roman",serif';
+  x.fillText(F.sch, CAP_W/2, y); y+=60;
+  x.font='400 39px "STIX Two Math","Cambria Math",Georgia,"Times New Roman",serif';
+  x.fillStyle='rgba(255,255,255,0.92)';
+  F.eqs.forEach(s=>{ x.fillText(s, CAP_W/2, y); y+=56; });
+  const tex=new THREE.CanvasTexture(c);
+  tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
+  tex.anisotropy=renderer.capabilities.getMaxAnisotropy(); tex.needsUpdate=true;
+  return tex;
+}
+const CAP_TEX={}; Object.keys(FORMS).forEach(k=>{ CAP_TEX[k]=makeCaptionTexture(FORMS[k]); });
+const capSprite=new THREE.Sprite(new THREE.SpriteMaterial({
+  map:CAP_TEX.ico, transparent:true, opacity:0, depthTest:false, depthWrite:false }));
+capSprite.scale.set(CAP_WORLD_W, CAP_WORLD_H, 1);
+capSprite.position.set(0,-1.6,0); capSprite.renderOrder=22;
+scene.add(capSprite);
+let capKey='ico';
+
+/* ---------- 7. LED リング -------------------------------------------------- */
+/* 細身のフォント設定（ここだけ触れば太さを調整できる） */
+const RING_FONT = { weight:200, family:'"Helvetica Neue","Inter","Hiragino Sans",Arial,sans-serif',
+                    size:72, tracking:'0.10em' };
+const RT_W=4096, RT_H=128, RING_AR=RT_H/RT_W, RING_N=200;
+function makeRingTexture(){
+  const c=document.createElement('canvas'); c.width=RT_W; c.height=RT_H;
+  const x=c.getContext('2d');
+  x.textAlign='center'; x.textBaseline='middle'; x.fillStyle='#ffffff';
+  try{ x.letterSpacing=RING_FONT.tracking; }catch(e){}
+  let px=RING_FONT.size;
+  const setF=()=>{ x.font=RING_FONT.weight+' '+px+'px '+RING_FONT.family; };
+  setF();
+  while(x.measureText(RING_TEXT).width > RT_W-48 && px>18){ px-=2; setF(); }
+  x.fillText(RING_TEXT, RT_W/2, RT_H/2 + 2);
+  const tex=new THREE.CanvasTexture(c);
+  tex.wrapS=THREE.RepeatWrapping; tex.wrapT=THREE.ClampToEdgeWrapping;
+  tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
+  tex.anisotropy=renderer.capabilities.getMaxAnisotropy(); tex.needsUpdate=true;
+  return tex;
+}
+const ringTex=makeRingTexture();
+const ringPos=new Float32Array((RING_N+1)*2*3);
+const ringNor=new Float32Array((RING_N+1)*2*3);
+const ringUv =new Float32Array((RING_N+1)*2*2);
+const ringIdx=[];
+for(let i=0;i<=RING_N;i++){
+  const u=i/RING_N;
+  ringUv[(i*2)*2]=u;   ringUv[(i*2)*2+1]=1;
+  ringUv[(i*2+1)*2]=u; ringUv[(i*2+1)*2+1]=0;
+}
+for(let i=0;i<RING_N;i++){
+  const a=i*2,b=i*2+1,c=(i+1)*2,d=(i+1)*2+1;
+  ringIdx.push(a,b,c, b,d,c);
+}
+const ringGeo=new THREE.BufferGeometry();
+ringGeo.setAttribute('position',new THREE.BufferAttribute(ringPos,3));
+ringGeo.setAttribute('normal',  new THREE.BufferAttribute(ringNor,3));
+ringGeo.setAttribute('uv',      new THREE.BufferAttribute(ringUv,2));
+ringGeo.setIndex(ringIdx);
+const ringMat=new THREE.ShaderMaterial({
+  vertexShader:TEXT_VS, fragmentShader:TEXT_FS, side:THREE.DoubleSide,
+  transparent:true, depthWrite:false, depthTest:false,
+  blending:THREE.CustomBlending, blendSrc:THREE.SrcAlphaFactor, blendDst:THREE.OneFactor,
+  uniforms:{ tText:{value:ringTex}, uOpacity:{value:1}, uOffset:{value:0}, uFlat:{value:0} }
+});
+const ringMesh=new THREE.Mesh(ringGeo, ringMat);
+ringMesh.frustumCulled=false; ringMesh.renderOrder=18;
+scene.add(ringMesh);
+
+const _p=new V3(),_ax=new V3(),_no=new V3(),_fp=new V3(),_fc=new V3(),
+      _cr=new V3(),_cu=new V3(),_cd=new V3(),_tq=new THREE.Quaternion(),
+      _te=new THREE.Euler(),_a=new V3(),_b=new V3();
+function updateRing(m, ringR, capY, t){
+  _te.set(0.34+0.07*Math.sin(t*0.21), t*0.17, -0.13+0.06*Math.cos(t*0.17));
+  _tq.setFromEuler(_te);
+  camera.updateMatrixWorld();
+  _cr.setFromMatrixColumn(camera.matrixWorld,0).normalize();
+  _cu.setFromMatrixColumn(camera.matrixWorld,1).normalize();
+  _cd.setFromMatrixColumn(camera.matrixWorld,2).normalize();
+  const hRing=RING_AR*2*Math.PI*ringR, hFlat=RING_AR*CAP_WORLD_W;
+  const h=hRing+(hFlat-hRing)*m;
+  _fc.set(0, capY, 0);
+  for(let i=0;i<=RING_N;i++){
+    const u=i/RING_N, th=u*Math.PI*2;
+    _p.set(Math.cos(th)*ringR,0,Math.sin(th)*ringR).applyQuaternion(_tq); _p.y+=OBJ_Y;
+    _ax.set(0,1,0).applyQuaternion(_tq);
+    _no.set(Math.cos(th),0,Math.sin(th)).applyQuaternion(_tq);
+    _fp.copy(_cr).multiplyScalar((u-0.5)*CAP_WORLD_W).add(_fc);
+    const px=_p.x+(_fp.x-_p.x)*m, py=_p.y+(_fp.y-_p.y)*m, pz=_p.z+(_fp.z-_p.z)*m;
+    _a.set(_ax.x+(_cu.x-_ax.x)*m,_ax.y+(_cu.y-_ax.y)*m,_ax.z+(_cu.z-_ax.z)*m).normalize();
+    _b.set(_no.x+(_cd.x-_no.x)*m,_no.y+(_cd.y-_no.y)*m,_no.z+(_cd.z-_no.z)*m).normalize();
+    const o0=(i*2)*3,o1=(i*2+1)*3;
+    ringPos[o0]=px+_a.x*h*0.5; ringPos[o0+1]=py+_a.y*h*0.5; ringPos[o0+2]=pz+_a.z*h*0.5;
+    ringPos[o1]=px-_a.x*h*0.5; ringPos[o1+1]=py-_a.y*h*0.5; ringPos[o1+2]=pz-_a.z*h*0.5;
+    ringNor[o0]=_b.x; ringNor[o0+1]=_b.y; ringNor[o0+2]=_b.z;
+    ringNor[o1]=_b.x; ringNor[o1+1]=_b.y; ringNor[o1+2]=_b.z;
+  }
+  ringGeo.attributes.position.needsUpdate=true;
+  ringGeo.attributes.normal.needsUpdate=true;
+}
+
+/* ---------- 8. piece 表示（カメラ固定 HUD／スキャン開閉） ------------------ */
+const PIECE_MAX=256, PIECE_DIST=3.0;
+const piecePos=new Float32Array(PIECE_MAX*3), pieceLoc=new Float32Array(PIECE_MAX*2);
+const pieceGeo=new THREE.BufferGeometry();
+pieceGeo.setAttribute('position',new THREE.BufferAttribute(piecePos,3));
+pieceGeo.setAttribute('aLoc',    new THREE.BufferAttribute(pieceLoc,2));
+pieceGeo.setDrawRange(0,0);
+const pieceMat=new THREE.ShaderMaterial({
+  vertexShader:PIECE_VS, fragmentShader:PIECE_FS, side:THREE.DoubleSide,
+  transparent:true, depthWrite:false, depthTest:false,
+  blending:THREE.CustomBlending, blendSrc:THREE.SrcAlphaFactor, blendDst:THREE.OneFactor,
+  uniforms:{ uTime:{value:0}, uOpacity:{value:0}, uTop:{value:1}, uBot:{value:1} }
+});
+const pieceGroup=new THREE.Group();
+const pieceMesh=new THREE.Mesh(pieceGeo, pieceMat);
+pieceMesh.frustumCulled=false; pieceMesh.renderOrder=24;
+pieceGroup.add(pieceMesh);
+
+function makeLabel(text){
+  const c=document.createElement('canvas'); c.width=512; c.height=96;
+  const x=c.getContext('2d');
+  x.textAlign='center'; x.textBaseline='middle'; x.fillStyle='#ffffff';
+  try{ x.letterSpacing='0.44em'; }catch(e){}
+  x.font='200 34px "Helvetica Neue","Inter",Arial,sans-serif';
+  x.fillText(text, 512/2+8, 96/2);
+  const t=new THREE.CanvasTexture(c);
+  t.minFilter=THREE.LinearFilter; t.magFilter=THREE.LinearFilter; t.needsUpdate=true;
+  return t;
+}
+const pieceLabel=new THREE.Mesh(new THREE.PlaneGeometry(1,1),
+  new THREE.MeshBasicMaterial({ map:makeLabel('piece'), transparent:true, opacity:0,
+    blending:THREE.AdditiveBlending, depthTest:false, depthWrite:false }));
+pieceLabel.renderOrder=25; pieceGroup.add(pieceLabel);
+
+const scanMatA=new THREE.ShaderMaterial({vertexShader:SCAN_VS, fragmentShader:SCAN_FS,
+  transparent:true, depthWrite:false, depthTest:false,
+  blending:THREE.AdditiveBlending, uniforms:{uOpacity:{value:0}}});
+const scanMatB=new THREE.ShaderMaterial({vertexShader:SCAN_VS, fragmentShader:SCAN_FS,
+  transparent:true, depthWrite:false, depthTest:false,
+  blending:THREE.AdditiveBlending, uniforms:{uOpacity:{value:0}}});
+const scanA=new THREE.Mesh(new THREE.PlaneGeometry(1,1), scanMatA);
+const scanB=new THREE.Mesh(new THREE.PlaneGeometry(1,1), scanMatB);
+scanA.renderOrder=26; scanB.renderOrder=26;
+pieceGroup.add(scanA, scanB);
+camera.add(pieceGroup);
+
+let pieceHalfY=0.2, pieceHalfX=0.3, pieceKey='', pieceBox=-1;
+function rebuildPieces(key, boxHalf){
+  const S=PIECE_STATE[key];
+  if(!S){ pieceGeo.setDrawRange(0,0); return; }
+  let raw=facePieces(MODEL[S.b], S.t, S.g, S.s);
+  if(!raw.length){ pieceGeo.setDrawRange(0,0); return; }
+  /* 大きい順に並べて左右の配置を固定する */
+  raw=raw.map(p=>{ let r=0; p.forEach(q=>r=Math.max(r,Math.hypot(q[0],q[1]))); return {p:p,r:r}; })
+         .sort((a,b)=>b.r-a.r);
+  const polys=raw.map(o=>o.p), rad=raw.map(o=>o.r);
+  const maxR=Math.max.apply(null,rad);
+  const gap=maxR*0.42;
+  let total=0; rad.forEach(r=>total+=2*r); total+=gap*(polys.length-1);
+  const k=boxHalf/Math.max(total/2, maxR*1.02);
+  let cur=-total/2, n=0;
+  const hy=maxR*k;
+  polys.forEach((p,i)=>{
+    const ox=(cur+rad[i])*k; cur+=2*rad[i]+gap;
+    const cx=0, cy=0;
+    for(let j=0;j<p.length;j++){
+      const a=p[j], b=p[(j+1)%p.length];
+      const tri=[[cx,cy],[a[0],a[1]],[b[0],b[1]]];
+      for(const v of tri){
+        if(n>=PIECE_MAX) break;
+        const X=ox+v[0]*k, Y=v[1]*k;
+        piecePos[n*3]=X; piecePos[n*3+1]=Y; piecePos[n*3+2]=0;
+        pieceLoc[n*2]=X/boxHalf; pieceLoc[n*2+1]=Y/Math.max(hy,1e-4);
+        n++;
+      }
+    }
+  });
+  pieceGeo.attributes.position.needsUpdate=true;
+  pieceGeo.attributes.aLoc.needsUpdate=true;
+  pieceGeo.setDrawRange(0,n);
+  pieceHalfY=hy; pieceHalfX=total/2*k;
+}
+
+/* ---------- 9. シーケンス ------------------------------------------------ */
+const SEGS=[
+ {b:'ico', A:{t:0,   g:0,   s:1 }, B:{t:TI,  g:0,   s:1 }, fk:'ico', tk:'ti' },
+ {b:'ico', A:{t:TI,  g:0,   s:1 }, B:{t:0.5, g:0,   s:1 }, fk:'ti',  tk:'id' },
+ {b:'dod', A:{t:0.5, g:0,   s:1 }, B:{t:TD,  g:0,   s:1 }, fk:'id',  tk:'td' },
+ {b:'dod', A:{t:TD,  g:0,   s:1 }, B:{t:0,   g:0,   s:1 }, fk:'td',  tk:'dod'},
+ {b:'dod', A:{t:0,   g:0,   s:1 }, B:{t:0,   g:PHI, s:1 }, fk:'dod', tk:'ssd'},
+ {b:'dod', A:{t:0,   g:PHI, s:1 }, B:{t:0,   g:PHI, s:SP}, fk:'ssd', tk:'spn'},
+ {b:'dod', A:{t:0,   g:PHI, s:SP}, B:{t:TD,  g:0,   s:SP}, fk:'spn', tk:'col'},
+ {b:'dod', A:{t:TD,  g:0,   s:SP}, B:{t:TD,  g:0,   s:SO}, fk:'col', tk:'obl'},
+ {b:'dod', A:{t:TD,  g:0,   s:SO}, B:{t:0,   g:0,   s:1 }, fk:'obl', tk:'dod'},
+];
+const SEG_DUR=6.4;
+let phase=0, dir=1, paused=false, objRadius=1.30, lockAmt=1, scrollOff=0;
+let curM=null, curTau=0, curSig=0, curSt=1;
+const smoother=x=>x*x*x*(x*(x*6-15)+10);
+const elTau=document.getElementById('tau');
+
+function applySequence(dt){
+  if(!paused) phase += (dt/SEG_DUR)*dir;
+  if(phase>=SEGS.length){ phase=SEGS.length-(phase-SEGS.length); dir=-1; }
+  if(phase<0){ phase=-phase; dir=1; }
+  const si=Math.min(SEGS.length-1, Math.max(0, Math.floor(phase)));
+  const g=SEGS[si];
+  const raw=Math.min(1, Math.max(0, phase-si));
+  const u=smoother(Math.min(1, Math.max(0,(raw-0.20)/0.60)));
+  const chaos=Math.sin(Math.PI*u);
+  const tau=g.A.t+(g.B.t-g.A.t)*u;
+  const sig=g.A.g+(g.B.g-g.A.g)*u;
+  const st =Math.exp(Math.log(g.A.s)+(Math.log(g.B.s)-Math.log(g.A.s))*u);
+
+  MODEL.ico.group.visible=(g.b==='ico');
+  MODEL.dod.group.visible=(g.b==='dod');
+  const M=MODEL[g.b];
+  M.update(tau, sig, st, chaos);
+  const k=Math.pow(TARGET_R/Math.max(M.radius(),1e-3), 0.74);
+  root.scale.setScalar(k);
+  objRadius=M.radius()*k;
+  filmMat.uniforms.uChaos.value=chaos;
+  curM=M; curTau=tau; curSig=sig; curSt=st;
+
+  lockAmt = smoother(Math.min(1, Math.max(0, 1 - 5.5*Math.min(u, 1-u))));
+  const key=(u<0.5)?g.fk:g.tk;
+  if(key!==capKey){ capKey=key; capSprite.material.map=CAP_TEX[key];
+                    capSprite.material.needsUpdate=true; }
+  elTau.innerHTML='τ <b>'+tau.toFixed(3)+'</b>　σ <b>'+sig.toFixed(3)+'</b>　s <b>'+st.toFixed(3)+'</b>';
+}
+
+/* ---------- 10. コンポジット --------------------------------------------- */
+const quadCam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+const quadScene=new THREE.Scene();
+const compMat=new THREE.ShaderMaterial({vertexShader:QUAD_VS, fragmentShader:COMP_FS,
+  uniforms:{tBase:{value:null}, uTime:{value:0}, uRes:{value:new THREE.Vector2()}}});
+quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2), compMat));
+let rtScene=null;
+
+/* ---------- 11. カメラ ---------------------------------------------------- */
+let theta=0.6, phi=1.30, tTheta=theta, tPhi=phi;
+let zoomMul=1, tZoom=1, dist=7, tDist=7;
+let dragging=false, lx=0, ly=0, idle=0;
+function fitDistance(){
+  const half=Math.tan(camera.fov*Math.PI/360);
+  const outer=Math.max(objRadius, objRadius*RING_K*(1-0.55*lockAmt));
+  const topY=OBJ_Y+outer;
+  const botY=capSprite.position.y-CAP_WORLD_H/2;
+  const needV=Math.max(Math.abs(topY),Math.abs(botY))+0.18;
+  const needH=Math.max(outer, CAP_WORLD_W/2)+0.18;
+  return Math.max(needV/half, needH/(half*camera.aspect));
+}
+function resize(){
+  const w=innerWidth,h=innerHeight,dpr=Math.min(devicePixelRatio,2);
+  renderer.setSize(w,h);
+  camera.aspect=w/h; camera.updateProjectionMatrix();
+  const W=Math.floor(w*dpr), H=Math.floor(h*dpr);
+  if(rtScene) rtScene.dispose();
+  rtScene=new THREE.WebGLRenderTarget(W,H,{minFilter:THREE.LinearFilter,
+    magFilter:THREE.LinearFilter, format:THREE.RGBAFormat});
+  compMat.uniforms.uRes.value.set(W,H);
+}
+addEventListener('resize', resize); resize();
+const el=renderer.domElement;
+el.addEventListener('pointerdown', e=>{ dragging=true; lx=e.clientX; ly=e.clientY; idle=0; });
+addEventListener('pointermove', e=>{ if(!dragging) return;
+  tTheta-=(e.clientX-lx)*0.006;
+  tPhi=Math.max(0.85,Math.min(2.30,tPhi-(e.clientY-ly)*0.006));
+  lx=e.clientX; ly=e.clientY; idle=0; });
+addEventListener('pointerup', ()=>dragging=false);
+addEventListener('pointercancel', ()=>dragging=false);
+el.addEventListener('wheel', e=>{ e.preventDefault();
+  tZoom=Math.max(0.62,Math.min(2.4,tZoom+e.deltaY*0.0012)); idle=0; }, {passive:false});
+addEventListener('keydown', e=>{ if(e.code==='Space'){ e.preventDefault(); paused=!paused; } });
+
+/* ---------- 12. ループ ---------------------------------------------------- */
+const clock=new THREE.Clock();
+let prevPlate=0, scanMode='open';
+function frame(){
+  requestAnimationFrame(frame);
+  const dt=Math.min(0.05, clock.getDelta()), t=clock.elapsedTime;
+  applySequence(dt);
+
+  const capY = OBJ_Y - objRadius - 0.30 - CAP_WORLD_H*0.5;
+  capSprite.position.y += (capY - capSprite.position.y)*0.09;
+
+  scrollOff += dt*0.30*(1-lockAmt);
+  if(lockAmt>0.35) scrollOff += (Math.round(scrollOff)-scrollOff)*0.14;
+  ringMat.uniforms.uOffset.value=scrollOff;
+  ringMat.uniforms.uFlat.value=lockAmt;
+  const plate=smoother(Math.min(1, Math.max(0,(lockAmt-0.72)/0.28)));
+  ringMat.uniforms.uOpacity.value=1-plate;
+  ringMesh.visible = plate<0.995;
+  capSprite.material.opacity=plate;
+
+  /* --- piece：上からスキャンして現れ、中央で閉じて消える --- */
+  if(plate>prevPlate+1e-6) scanMode='open';
+  else if(plate<prevPlate-1e-6) scanMode='close';
+  prevPlate=plate;
+  const hh=Math.tan(camera.fov*Math.PI/360)*PIECE_DIST, hw=hh*camera.aspect;
+  const boxHalf=Math.min(hh*0.30, hw*0.20);
+  pieceGroup.position.set(hw-boxHalf-hh*0.12, hh*0.40, -PIECE_DIST);
+  if(plate>0.001){
+    if(capKey!==pieceKey || Math.abs(boxHalf-pieceBox)>1e-4){
+      pieceKey=capKey; pieceBox=boxHalf; rebuildPieces(capKey, boxHalf);
+    }
+    let top, bot;
+    if(scanMode==='open'){ top=1.02; bot=1.02-2.04*plate; }
+    else                 { top=1.02*plate; bot=-1.02*plate; }
+    pieceMat.uniforms.uTop.value=top/1.0;
+    pieceMat.uniforms.uBot.value=bot/1.0;
+    pieceMat.uniforms.uOpacity.value=1;
+    pieceMat.uniforms.uTime.value=t;
+    const lo=Math.min(1,Math.max(0,(plate-0.02)/0.16))*(1-smoother(Math.min(1,Math.max(0,(plate-0.86)/0.14))));
+    scanMatA.uniforms.uOpacity.value=lo;
+    scanMatB.uniforms.uOpacity.value=(scanMode==='close')?lo:0;
+    const lw=pieceHalfX*2.3+boxHalf*0.25;
+    scanA.scale.set(lw, boxHalf*0.10, 1);
+    scanB.scale.set(lw, boxHalf*0.10, 1);
+    scanA.position.set(0, bot*pieceHalfY, 0.001);
+    scanB.position.set(0, top*pieceHalfY, 0.001);
+    pieceLabel.scale.set(boxHalf*1.30, boxHalf*1.30*96/512, 1);
+    pieceLabel.position.set(0, -pieceHalfY-boxHalf*0.30, 0);
+    pieceLabel.material.opacity=Math.max(0,(plate-0.55)/0.45);
+    pieceGroup.visible=true;
+  } else {
+    pieceGroup.visible=false;
+  }
+
+  idle+=dt;
+  if(!dragging && idle>2.0) tTheta += dt*0.075;
+  zoomMul += (tZoom-zoomMul)*0.10;
+  tDist = fitDistance()*zoomMul;
+  theta+=(tTheta-theta)*0.07; phi+=(tPhi-phi)*0.07; dist+=(tDist-dist)*0.06;
+  const sp=Math.sin(phi);
+  camera.position.set(dist*sp*Math.sin(theta), dist*Math.cos(phi), dist*sp*Math.cos(theta));
+  camera.lookAt(0, OBJ_Y*0.42, 0);
+  root.rotation.y=t*0.045;
+  root.rotation.x=Math.sin(t*0.13)*0.075;
+  filmMat.uniforms.uTime.value=t;
+
+  updateRing(lockAmt, objRadius*RING_K, capSprite.position.y, t);
+
+  renderer.setRenderTarget(rtScene);
+  renderer.clear(true,true,true);
+  renderer.render(scene, camera);
+  compMat.uniforms.tBase.value=rtScene.texture;
+  compMat.uniforms.uTime.value=t;
+  renderer.setRenderTarget(null);
+  renderer.clear(true,true,true);
+  renderer.render(quadScene, quadCam);
+}
+frame();
+</script>
+</body>
+</html>
