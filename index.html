@@ -21,11 +21,24 @@
   .br{bottom:26px;right:28px;text-align:right;
       font-family:ui-monospace,"SF Mono",Menlo,monospace;
       font-size:9px;letter-spacing:.18em;color:#3d4f5e;line-height:1.9;}
+  /* SOUND toggle：既存 .br の書体をそのまま継承し、装飾を一切足さない */
+  #snd{pointer-events:auto;cursor:pointer;
+       -webkit-appearance:none;appearance:none;
+       background:none;border:0;border-radius:0;padding:0;margin:0;
+       font:inherit;letter-spacing:inherit;line-height:inherit;color:inherit;
+       text-align:right;-webkit-user-select:none;user-select:none;
+       -webkit-tap-highlight-color:transparent;}
+  #snd:hover{color:#7fa8bf}
+  #snd[aria-pressed="true"]{color:#9dc0d4}
+  #snd:focus-visible{outline:1px solid rgba(120,170,200,.45);outline-offset:2px}
+  #snd:disabled{cursor:default;color:#2b3945}
   .rule{position:fixed;z-index:10;background:rgba(120,170,200,.09);pointer-events:none}
   .rule.h{left:28px;right:28px;height:1px}
   .rule.v{top:26px;bottom:26px;width:1px}
   @media (max-width:680px){
-    .tl{left:18px} .tr,.br{right:18px} .rule.h{left:18px;right:18px} .br{display:none}
+    .tl{left:18px} .tr,.br{right:18px} .rule.h{left:18px;right:18px}
+    /* 操作ヒント3行のみ従来どおり非表示。SOUND だけは残す */
+    #hints{display:none}
   }
 </style>
 </head>
@@ -41,7 +54,7 @@
 </div>
 <div class="ui tr" id="tau">τ <b>0.000</b>　σ <b>0.000</b>　s <b>1.000</b></div>
 <div class="ui br">
-  DRAG — ORBIT<br>SCROLL — DOLLY<br>SPACE — HOLD
+  <span id="hints">DRAG — ORBIT<br>SCROLL — DOLLY<br>SPACE — HOLD<br></span><button id="snd" type="button" aria-pressed="false">SOUND — OFF</button>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -820,9 +833,123 @@ addEventListener('pointerup', ()=>dragging=false);
 addEventListener('pointercancel', ()=>dragging=false);
 el.addEventListener('wheel', e=>{ e.preventDefault();
   tZoom=Math.max(0.62,Math.min(2.4,tZoom+e.deltaY*0.0012)); idle=0; }, {passive:false});
-addEventListener('keydown', e=>{ if(e.code==='Space'){ e.preventDefault(); paused=!paused; } });
+/* interactive element（SOUND button 等）にフォーカスがある間は HOLD を発火しない。
+   canvas / body 操作時は従来どおり。 */
+function isInteractive(el){
+  if(!el || el===document.body || el===document.documentElement) return false;
+  if(el.isContentEditable) return true;
+  return /^(BUTTON|A|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(el.tagName||'');
+}
+addEventListener('keydown', e=>{ if(e.code==='Space'){
+  if(isInteractive(document.activeElement)) return;
+  e.preventDefault(); paused=!paused; } });
 
-/* ---------- 12. ループ ---------------------------------------------------- */
+/* ---------- 12. Sonification ---------------------------------------------
+   Phase 1 — Audio skeleton（要件定義書 v1.1 §11 §13 §17 §18 §21 §28）
+     · 固定周波数の暫定音のみ。幾何メトリクスは Phase 2 で接続する。
+     · Voices → Mix → Compressor → MasterGain → Destination
+     · AudioNode は初期化時に1回だけ生成し、以後は再生成しない。
+     · 既存の描画コードからは完全に疎結合。frame() へのフックも Phase 2 まで無し。
+   ------------------------------------------------------------------------- */
+const SOUND = {
+  enabled:false,   /* ユーザーが ON にしているか */
+  failed :false,   /* 初期化に失敗した。true 以降は何もしない */
+  ctx    :null,
+  mix    :null,    /* Voice Mix        */
+  comp   :null,    /* Compressor（limiter設定） */
+  master :null,    /* Master Gain（fade用。Compressor の後段） */
+  voices :[]       /* 8。{ osc, gain, filter } */
+};
+const SND_MASTER = 0.16;   /* Master Gain 上限。低めから開始する（§17） */
+const SND_FADE   = 0.20;   /* fade in / out 秒（§17: 100〜300ms） */
+/* Phase 1 暫定の固定周波数。Phase 2 で幾何クラス由来の値へ置き換える（§23） */
+const SND_HZ = [110.0, 165.0, 220.0, 275.0, 330.0, 385.0, 440.0, 495.0];
+const SND_G  = [ 0.90,  0.62,  0.48,  0.36,  0.28,  0.21,  0.16,  0.12];
+
+const sndBtn = document.getElementById('snd');
+let sndSuspendTimer = 0;
+
+function sndUI(){
+  if(!sndBtn || SOUND.failed) return;
+  sndBtn.textContent = SOUND.enabled ? 'SOUND — ON' : 'SOUND — OFF';
+  sndBtn.setAttribute('aria-pressed', SOUND.enabled ? 'true' : 'false');
+}
+/* 失敗しても WebGL を止めない。console 出力は1回だけ（§18 / AC-13） */
+function sndFail(err){
+  if(SOUND.failed) return;
+  SOUND.failed = true; SOUND.enabled = false;
+  try{ if(SOUND.ctx && SOUND.ctx.close) SOUND.ctx.close(); }catch(e){}
+  SOUND.ctx=null; SOUND.mix=null; SOUND.comp=null; SOUND.master=null; SOUND.voices=[];
+  if(sndBtn){
+    sndBtn.textContent='SOUND — N/A';
+    sndBtn.setAttribute('aria-pressed','false');
+    sndBtn.disabled = true;
+  }
+  console.warn('[TRANSFIGURATION] sonification disabled:', (err && err.message) ? err.message : err);
+}
+function sndInit(){
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if(!AC) throw new Error('AudioContext unavailable');
+  const ctx = new AC();
+
+  const mix = ctx.createGain();  mix.gain.value = 1;
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -12; comp.knee.value = 6; comp.ratio.value = 12;
+  comp.attack.value = 0.003;   comp.release.value = 0.25;
+  const master = ctx.createGain(); master.gain.value = 0;   /* 常に無音から */
+  mix.connect(comp); comp.connect(master); master.connect(ctx.destination);
+
+  const voices = [];
+  for(let i=0;i<8;i++){
+    const osc = ctx.createOscillator();  osc.type = 'sine';
+    osc.frequency.value = SND_HZ[i];
+    const g = ctx.createGain();          g.gain.value = SND_G[i];
+    const f = ctx.createBiquadFilter();  f.type='lowpass'; f.frequency.value=2400; f.Q.value=0.7;
+    osc.connect(g); g.connect(f); f.connect(mix);
+    osc.start();                          /* 以後 stop しない。再生成もしない */
+    voices.push({osc:osc, gain:g, filter:f});
+  }
+  SOUND.ctx=ctx; SOUND.mix=mix; SOUND.comp=comp; SOUND.master=master; SOUND.voices=voices;
+}
+/* 現在値から連続に繋いでランプする。瞬間切替を行わない（§17 / AC-10） */
+function sndRamp(target){
+  if(!SOUND.ctx || !SOUND.master) return;
+  const t = SOUND.ctx.currentTime, p = SOUND.master.gain;
+  const now = (typeof p.value === 'number' && isFinite(p.value)) ? p.value : 0;
+  p.cancelScheduledValues(t);
+  p.setValueAtTime(now, t);
+  p.linearRampToValueAtTime(target, t + SND_FADE);
+}
+function setSound(on){
+  if(SOUND.failed) return;
+  try{ if(on && !SOUND.ctx) sndInit(); }
+  catch(err){ sndFail(err); return; }
+  if(!SOUND.ctx) return;
+
+  SOUND.enabled = on; sndUI();
+  const ctx = SOUND.ctx;
+
+  if(on){
+    clearTimeout(sndSuspendTimer);
+    const go = ()=>{ if(SOUND.enabled) sndRamp(SND_MASTER); };
+    if(ctx.state === 'suspended' && ctx.resume){
+      let p; try{ p = ctx.resume(); }catch(err){ sndFail(err); return; }
+      if(p && p.then) p.then(go, err=>sndFail(err)); else go();
+    } else go();
+  }else{
+    sndRamp(0);
+    clearTimeout(sndSuspendTimer);
+    /* fade out 完了後に suspend して Audio 処理負荷を落とす（P0-6 / §16.1） */
+    sndSuspendTimer = setTimeout(function(){
+      if(!SOUND.enabled && SOUND.ctx && SOUND.ctx.suspend){
+        try{ const q = SOUND.ctx.suspend(); if(q && q.catch) q.catch(function(){}); }catch(e){}
+      }
+    }, SND_FADE*1000 + 80);
+  }
+}
+if(sndBtn) sndBtn.addEventListener('click', function(){ setSound(!SOUND.enabled); });
+
+/* ---------- 13. ループ ---------------------------------------------------- */
 const clock=new THREE.Clock();
 let prevPlate=0, scanMode='open';
 function frame(){
