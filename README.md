@@ -5,7 +5,7 @@
 多面体の数式を眺めていたら、  
 形が変わるなら、音も変わるのではないかと思いました。
 
-![TRANSFIGURATION](./assets/transfiguration-raw.png)
+![TRANSFIGURATION](./assets/transfiguration-raw.webp)
 
 頂点、辺、面から生まれる幾何学的な長さを、  
 そのまま耳に聞こえる周波数へ写像しています。
@@ -15,7 +15,7 @@
 
 > *What would a polyhedron sound like if its geometry were allowed to speak for itself?*
 
-[![TRANSFIGURATION Demo](./assets/demo-thumbnail.png)](https://youtu.be/z0JAAQVdsyY)
+[![TRANSFIGURATION Demo](./assets/demo-thumbnail.webp)](https://youtu.be/z0JAAQVdsyY)
 
 [▶ Watch Demo](https://youtu.be/z0JAAQVdsyY) | [◇ Try it live](https://wory-bonbon.github.io/transfiguration/)
 
