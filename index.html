@@ -921,7 +921,7 @@ function sndInit(){
     osc.connect(g); g.connect(f); f.connect(mix);
     osc.start();                          /* 以後 stop しない。再生成もしない */
     const v = {osc:osc, gain:g, filter:f, last:0};
-    if(modal) mtInitVoice(ctx, v, i);     /* seam 2/4 — 部分音は modal 時のみ（AC-M1） */
+    if(modal) mtInitVoice(ctx, v, i, mix); /* seam 2/4 — 部分音は modal 時のみ（AC-M1） */
     voices.push(v);
   }
   SOUND.ctx=ctx; SOUND.mix=mix; SOUND.comp=comp; SOUND.master=master; SOUND.voices=voices;
@@ -1175,7 +1175,7 @@ function setSound(on){
 if(sndBtn) sndBtn.addEventListener('click', function(){ setSound(!SOUND.enabled); });
 
 /* ---------- 12b. Modal Timbre（feature/modal-timbre）----------------------
-   要件定義書 docs/modal-timbre-requirements-v0.3.md
+   要件定義書 docs/modal-timbre-requirements-v0.4.md
 
    Phase M1 — 比率導出（§3.1）＋部分音ノード（固定ゲイン）
      · 既定で部分音を有効化する（本作の音）。?timbre=raw で RAW v1 の音に戻る
@@ -1185,7 +1185,8 @@ if(sndBtn) sndBtn.addEventListener('click', function(){ setSound(!SOUND.enabled)
          weight > 0        無音クラスの凍結 len2 を弾く
          L_k ≥ ε·L_i       退化フェード中の比率発散を弾く
          r > 1 + MT_RMIN   自クラス・同長クラスの ULP 混入を弾く
-     · ゲインは ρ_base 固定。σ 連動とパワー和正規化は Phase M2（§4）
+     · ρ = ρ_base + ρ_sig·(σ/φ)。星形化が進むほど部分音が立ち上がる（§4）
+     · voice ごとに実効パワー和で正規化。filter 後段の v.norm が担う（§4-3）
      · §12 の RAW 実装（sndTables / sndBuildP / sndFaceLoop / sndMetrics）は
        読むだけで一切改変しない（§2-5）
      · 既存の固定フィルタ（lowpass 5000Hz / Q 0.7）も変更しない。modal の
@@ -1194,7 +1195,8 @@ if(sndBtn) sndBtn.addEventListener('click', function(){ setSound(!SOUND.enabled)
    ------------------------------------------------------------------------- */
 const MT = {
   on      : true,    /* modal か。sndInit() の冒頭で1回だけ確定する（§8） */
-  resolved: false
+  resolved: false,
+  rho     : 0.35     /* σ 連動の部分音減衰比。mtPool() が毎 tick 更新する（§4） */
 };
 /* §10 で確定した定数。ε / δ / ρ は Phase M3 で調整する（§10-5 §10-6） */
 const MT_EPS   = 0.05;  /* 候補比率の相対しきい値。r ≤ 1/MT_EPS = 20（§3.1） */
@@ -1207,6 +1209,8 @@ const MT_RMIN  = 1e-9;  /* r の下限。自クラス・同長クラスを候補
                            「最小の候補」として常に勝ち、本来の候補を覆い隠す。 */
 const MT_RHO_B = 0.35;  /* ρ_base（§4）        */
 const MT_RHO_S = 0.25;  /* ρ_sig。ρ 上限 0.6（§4） */
+const MT_RHO_MX= 0.60;  /* ρ 上限（§4） */
+const MT_SIG_MX= PHI;   /* σ の最大値。SEGS の g は 0 → φ（小星形十二面体）を動く */
 const MT_NPART = 2;     /* voice あたりの部分音数。§7 の縮退時は 1 へ落とす */
 
 /* URL パラメータは1回だけ読み、以後は定数として扱う。実行中の切替は行わない（§8）。
@@ -1225,7 +1229,7 @@ function mtResolve(){
 /* 部分音 Osc / Gain を生成し v.parts へ格納する。voice Filter の前段で合流させ、
    既存の安全ロールオフを部分音にも効かせる（§5）。MT.on のときだけ呼ばれる。
    voice のモードは index の偶奇で静的に決まる（偶数=第1モード / 奇数=第2モード）。 */
-function mtInitVoice(ctx, v, i){
+function mtInitVoice(ctx, v, i, mix){
   v.mode = (i & 1) ? 1 : 0;            /* MT_POOL の添字。0=第1モード, 1=第2モード */
   const parts = [];
   for(let k=0;k<MT_NPART;k++){
@@ -1233,9 +1237,16 @@ function mtInitVoice(ctx, v, i){
     const g = ctx.createGain();        g.gain.value = 0;
     o.connect(g); g.connect(v.filter);
     o.start();                          /* 以後 stop しない。再生成もしない（§4.1） */
-    parts.push({osc:o, gain:g, last:SND_F0});
+    parts.push({osc:o, gain:g, last:SND_F0, f:0, a:0});
   }
   v.parts = parts;
+  /* voice 全体（基音＋部分音）にかかるパワー和正規化ゲイン（§4-3）。
+     基音の gain は RAW の sndApply が握っているので、そこへ二重に自動化を
+     積まずに済むよう、filter の後段へ独立したノードとして挿む。 */
+  v.norm = ctx.createGain();  v.norm.gain.value = 1;
+  v.filter.disconnect();               /* 直前に張られた filter → mix を差し替える */
+  v.filter.connect(v.norm);
+  v.norm.connect(mix);
 }
 
 /* 候補プール（§3.1）。4 クラスの代表長をモード別に周波数へ直して保持する。
@@ -1261,6 +1272,14 @@ function mtPool(){
     MT_POOL[0][j] = (w>0 && c.len  > SND_EPS && isFinite(c.len )) ? SND_F0*SND_LREF/c.len  : 0;
     MT_POOL[1][j] = (w>0 && c.len2 > SND_EPS && isFinite(c.len2)) ? SND_F0*SND_LREF/c.len2 : 0;
   }
+  /* σ 連動（§4）。星形化が進むほど部分音を立ち上げる。
+     σ は幾何としても len2（apex→辺中点距離）を伸ばすので、
+     ここでの ρ は「同じ幾何変化の音色側の現れ」であって別系統の演出ではない。 */
+  let sn = curSig/MT_SIG_MX;
+  if(!(sn > 0)) sn = 0; else if(sn > 1) sn = 1;
+  let rho = MT_RHO_B + MT_RHO_S*sn;
+  if(rho > MT_RHO_MX) rho = MT_RHO_MX;
+  MT.rho = (isFinite(rho) && rho >= 0) ? rho : 0;
 }
 /* 候補クラスの index を返す。−1 で候補なし（案A。§3.1-2 / §10-7）。
    下限 f_i·(1+MT_RMIN) は自クラスと同長クラスを除外する。ti / td のように
@@ -1291,19 +1310,40 @@ function mtApply(v, fv, g0, t){
      wc は候補クラスが退化していく際のフェード。プール離脱を無音側で吸収する。 */
   const wc = (ci >= 0) ? sndSmooth(MT_POOLW[ci]/MT_WGATE) : 0;
   const wr = (r > 1) ? sndSmooth((r-1)/MT_DELTA)*wc : 0;
-  let rk = 1;
+  const rho = MT.rho;
+
+  /* 1パス目 — 部分音の相対振幅 a_k を確定する。
+     a_k = ρ^k · w_r · 帯域ゲート。すなわち「実際に鳴る量」（§4）。 */
+  let rk = 1, pw = 1;                          /* pw: 基音を 1 とした総パワー */
   for(let k=0;k<parts.length;k++){
     const p = parts[k];
     rk *= r;                                   /* k=0 → r , k=1 → r² */
-    let f = 0, g = 0;
+    let f = 0, a = 0;
     if(r > 1){
       const x = fv*rk;
-      if(isFinite(x) && x > 0){
-        f = x;
-        /* Phase M1 は ρ_base 固定。σ 連動とパワー和正規化は Phase M2（§4） */
-        g = g0 * Math.pow(MT_RHO_B, k+1) * wr * sndGate(x);
-      }
+      if(isFinite(x) && x > 0){ f = x; a = Math.pow(rho, k+1) * wr * sndGate(x); }
     }
+    if(!isFinite(a) || a < 0) a = 0;
+    p.f = f; p.a = a;
+    pw += a*a;
+  }
+  /* パワー和正規化（§4-3）。異周波数の正弦波は非コヒーレントに加算されるので、
+     基音＋実際に鳴っている部分音の総パワーを 1 に保つ。§4 の 1/√(1+ρ²+ρ⁴) は
+     両部分音が満振幅のときの特例で、候補なし・帯域外・r→1 の voice では
+     自動的に norm = 1 になる。norm は filter 後段の v.norm に載せるため、
+     基音と部分音の両方へ一度だけ効く。 */
+  if(v.norm){
+    let nv = 1/Math.sqrt(pw);
+    if(!isFinite(nv) || nv <= 0) nv = 1;
+    if(SOUND.primed) v.norm.gain.setTargetAtTime(nv, t, SND_TC_G);
+    else             v.norm.gain.setValueAtTime(nv, t);
+  }
+
+  /* 2パス目 — 部分音へ反映。norm は v.norm が持つのでここでは掛けない。 */
+  for(let k=0;k<parts.length;k++){
+    const p = parts[k];
+    const f = p.f;
+    let g = g0 * p.a;
     if(f > 0) p.last = f;
     let pf = p.last;
     if(!isFinite(pf) || pf <= 0) pf = SND_F0;
