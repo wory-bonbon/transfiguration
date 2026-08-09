@@ -899,7 +899,7 @@ function sndFail(err){
   console.warn('[TRANSFIGURATION] sonification disabled:', (err && err.message) ? err.message : err);
 }
 function sndInit(){
-  const modal = mtResolve();   /* seam 1/4 — ?timbre=modal（§12b / §8-4） */
+  const modal = mtResolve();   /* seam 1/4 — 既定 modal / ?timbre=raw（§12b / §8） */
   const AC = window.AudioContext || window.webkitAudioContext;
   if(!AC) throw new Error('AudioContext unavailable');
   const ctx = new AC();
@@ -1178,8 +1178,8 @@ if(sndBtn) sndBtn.addEventListener('click', function(){ setSound(!SOUND.enabled)
    要件定義書 docs/modal-timbre-requirements-v0.3.md
 
    Phase M1 — 比率導出（§3.1）＋部分音ノード（固定ゲイン）
-     · ?timbre=modal のときだけ部分音を有効化する。既定は RAW v1 と完全に同一
-     · パラメータなしのとき部分音ノードを生成せず、実行経路も RAW と同一に保つ
+     · 既定で部分音を有効化する（本作の音）。?timbre=raw で RAW v1 の音に戻る
+     · raw 指定時は部分音ノードを生成せず、実行経路も RAW と同一に保つ
      · 自己相似方式 { r, r² }。r = 自分より1段だけ短い代表長との比（§3.1）
      · 候補は 3 つの門を通す（§3.4）
          weight > 0        無音クラスの凍結 len2 を弾く
@@ -1193,7 +1193,7 @@ if(sndBtn) sndBtn.addEventListener('click', function(){ setSound(!SOUND.enabled)
    このブロックと §12 内の 4 箇所の seam を消せば RAW v1 に戻る。
    ------------------------------------------------------------------------- */
 const MT = {
-  on      : false,   /* ?timbre=modal か。sndInit() の直前に1回だけ確定する（§8-4） */
+  on      : true,    /* modal か。sndInit() の冒頭で1回だけ確定する（§8） */
   resolved: false
 };
 /* §10 で確定した定数。ε / δ / ρ は Phase M3 で調整する（§10-5 §10-6） */
@@ -1209,41 +1209,18 @@ const MT_RHO_B = 0.35;  /* ρ_base（§4）        */
 const MT_RHO_S = 0.25;  /* ρ_sig。ρ 上限 0.6（§4） */
 const MT_NPART = 2;     /* voice あたりの部分音数。§7 の縮退時は 1 へ落とす */
 
-/* URL パラメータは1回だけ読み、以後は定数として扱う。実行中の切替は行わない（§8-4） */
+/* URL パラメータは1回だけ読み、以後は定数として扱う。実行中の切替は行わない（§8）。
+   既定は modal（本作の音）。?timbre=raw のときだけ RAW v1 の音に戻す。
+   例外時は既定側（modal）へ倒す。 */
 function mtResolve(){
   if(MT.resolved) return MT.on;
   MT.resolved = true;
   try{
     const q = (window.location && window.location.search) || '';
-    MT.on = /(?:^|[?&])timbre=modal(?:&|$)/.test(q);
-  }catch(e){ MT.on = false; }
-  if(MT.on){
-    console.info('[TRANSFIGURATION] modal timbre: ON (Phase M1)');
-    try{ window.__mtDump = mtDump; }catch(e){}
-  }
+    MT.on = !/(?:^|[?&])timbre=raw(?:&|$)/.test(q);
+  }catch(e){ MT.on = true; }
+  if(!MT.on) console.info('[TRANSFIGURATION] timbre: RAW v1 (tag raw-v1 相当)');
   return MT.on;
-}
-/* Phase M1 の実測用の一時的な足場。?timbre=modal のときだけ window へ生やす。
-   コンソールで __mtDump() を呼ぶと、その瞬間の代表長・基音・比率を表で出す。
-   要件定義書 §3.2 の第2モード基準値を記録するために使う。
-   main へマージする前に必ず削除すること。 */
-function mtDump(){
-  const rows=[];
-  for(let k=0;k<4;k++){
-    for(let m=0;m<2;m++){
-      const i=2*k+m, v=SOUND.voices[i];
-      const c=SND_CLS[m ? sndOrd2[k] : sndOrd[k]];
-      const L=m ? c.len2 : c.len, f=(v && v.last) || 0;
-      const ci=mtCand(m, f), r=(ci>=0)?MT_POOL[m][ci]/f:0;
-      rows.push({ voice:i, mode:m+1, cls:c.key,
-                  L:+L.toFixed(6), f_Hz:+f.toFixed(2), weight:+c.weight.toFixed(4),
-                  cand: ci>=0 ? SND_CLS[ci].key : null,
-                  r: r?+r.toFixed(6):null, r2: r?+(r*r).toFixed(6):null,
-                  p1_Hz: r?+(f*r).toFixed(2):null, p2_Hz: r?+(f*r*r).toFixed(2):null });
-    }
-  }
-  console.table(rows);
-  return rows;
 }
 /* 部分音 Osc / Gain を生成し v.parts へ格納する。voice Filter の前段で合流させ、
    既存の安全ロールオフを部分音にも効かせる（§5）。MT.on のときだけ呼ばれる。

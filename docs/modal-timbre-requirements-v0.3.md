@@ -5,9 +5,26 @@
 **上位文書:** `docs/geometry-sonification-requirements-v1.1.md`（以下 v1.1。矛盾時は本書が音色仕様のみを上書きし、それ以外は常に v1.1 が正）
 **参照実装:** `index.html` §12 Sonification（Phase 2 完了時点）＋ §12b Modal Timbre（Phase M1）
 **Branch:** `feature/modal-timbre`（`main` の RAW 版は変更しない。CLAUDE.md 参照）
-**Status:** Phase M1 実装済み・実測検証済み。Phase M2 着手前
+**Status:** Phase M1 実装済み・実測検証済み。**modal を本線化して main へ統合済み。** Phase M2 着手前
 
-**本書は v0.2 を置き換える。** `docs/modal-timbre-requirements-v0.2.md` は履歴として残しているが、内容は本書が正史とする。
+**本書は v0.2 を置き換える。** `docs/modal-timbre-requirements-v0.2.md` は削除した（git 履歴とタグ `raw-v1` に残る）。
+
+---
+
+## 追補 — 方針変更（2026-08-09）
+
+**modal を本作の音として本線化し、main へ統合した。RAW v1 は公開面から退役する。**
+
+| 項目 | 変更前 | 変更後 |
+|---|---|---|
+| 公開デフォルトの音 | RAW v1 | **modal** |
+| RAW v1 の入手 | `main` ブランチ | **タグ `raw-v1`**（恒久参照点） |
+| URL パラメータ | `?timbre=modal` で modal | **`?timbre=raw` で RAW**。無指定は modal |
+| 開発ブランチ | `feature/modal-timbre` | main へマージ済み |
+
+これに伴い §1-2 / §8 / §9 AC-M1 / §11 / §12 を改訂した。**§2〜§7 の導出規則・ゲイン設計・tracking は一切変更していない。**
+
+`?timbre=raw` を残した理由は §8 に記す。
 
 ---
 
@@ -69,8 +86,8 @@ f_i · r²  = f0 · L_ref · L_i / L_k²      既存集合に無い新しい周�
 ## 1. RAW 原則との関係（最重要）
 
 1. 本拡張は MUSICAL（音階量子化）ではない。CLAUDE.md の RAW 定義 5 項目をすべて満たす。
-2. ただし `main` の RAW v1 は公開済みの参照実装なので**変更しない**。開発は `feature/modal-timbre` で行う。
-3. 評価後に main へ入れる場合も、RAW v1 の音（部分音なし）へ戻せる切替を残す（§8）。
+2. RAW v1 は**タグ `raw-v1` として恒久保存**する。そのコミットには手を触れない。
+3. 本線化後も、RAW v1 の音（部分音なし）へ戻せる切替を残す（§8）。
 4. v1.1 の以下は**そのまま継承し、変更しない**：
    - 25Hz 独立読み取り専用 audio metrics パス（§5.2 / §12）
    - Audio Graph の外側 `Voice Mix → Compressor → Master Gain → Destination`（§11）
@@ -325,7 +342,7 @@ norm = 1 / √(1 + ρ² + ρ⁴)             パワー和正規化
 
 - 部分音 Oscillator は既存の voice Filter の**前段**で合流させる。安全ロールオフ（lowpass 5000 Hz）を部分音にも効かせるため
 - 外側のグラフ（Mix 以降）は v1.1 §11 から**一切変更しない**。StereoPanner（P2）の挿入位置も v1.1 のまま
-- 部分音ノードは `?timbre=modal` のときだけ生成する（AC-M1）
+- 部分音ノードは `?timbre=raw` **でないとき**に生成する（既定 = modal。AC-M1）
 - v1.1 §4.1 のとおり、AudioNode をフレームごとに生成・破棄しない。初期化時に確保し、以後はパラメータのみ更新する
 
 ---
@@ -387,7 +404,7 @@ OscillatorNode 総数: 8 voices × 3 = 24（v1 RAW は 8）
 GainNode 追加     : 16
 metrics 追加計算  : プール構築 8 除算 ＋ 探索 8 voice × 4 比較。25Hz。予算内
 Sound OFF 時      : v1.1 P0-6 のとおり sndTick() 先頭で即 return。一切計算しない
-?timbre 未指定時  : 部分音ノードを生成しない（AC-M1）
+?timbre=raw 時    : 部分音ノードを生成しない（AC-M1）
 ```
 
 Phase M3 の検証で CPU 使用率が RAW v1 比で有意に悪化する場合、部分音数を voice あたり 1（`r` のみ）へ縮退できる構造にする。
@@ -396,11 +413,24 @@ Phase M3 の検証で CPU 使用率が RAW v1 比で有意に悪化する場合�
 
 ## 8. モード切替
 
-1. URL パラメータ `?timbre=modal` で有効化。デフォルト（パラメータなし）は RAW v1 と完全同一の音
-2. UI トグルの追加は v0.4 で判断（v1.1 §13 の要件をそのまま踏襲すること）
-3. `?timbre=modal` なしの状態で RAW v1 と出力が同一であることを AC-M1 で保証する
-4. パラメータ解析は `sndInit()` の冒頭で1回だけ行い、以後は定数として扱う（実行中の切替は行わない）
-5. 判定は case-sensitive。`?timbre=modal` のみを受け付ける
+1. **デフォルト（パラメータなし）は modal。** これが本作の音である
+2. **`?timbre=raw` を付けたときだけ RAW v1 の音**になる。部分音ノードを生成せず、実行経路も RAW と同一（AC-M1）
+3. パラメータ解析は `sndInit()` の冒頭で1回だけ行い、以後は定数として扱う（実行中の切替は行わない）
+4. 判定は case-sensitive。`?timbre=raw` のみを RAW として受け付ける。`?timbre=modal` は明示指定として通るが既定と同じ挙動（既存の共有リンクを壊さないため）
+5. 例外時（`location` 参照不可など）は既定側の modal へ倒す
+6. UI トグルの追加は v0.4 で判断（v1.1 §13 の要件をそのまま踏襲すること）
+
+### `?timbre=raw` を残した判断（追補）
+
+**残す。** 追加コストは `mtResolve()` の正規表現 1 行のみである。
+
+分岐そのものを廃止するには `MT.on` の門（seam 2/4・3/4・4/4）を消して部分音を常時生成する形へ書き換える必要があり、**残すより変更量が多い**。加えて、
+
+- Phase M2 / M3 の聴感調整で RAW との A/B 比較が要る
+- 不具合切り分け時に「modal 起因か RAW 起因か」を URL だけで判定できる
+- CLAUDE.md が求める RAW との比較可能性を、タグ `raw-v1` の checkout なしで満たせる
+
+以上より、廃止は合理性がないと判断した。
 
 ---
 
@@ -408,7 +438,7 @@ Phase M3 の検証で CPU 使用率が RAW v1 比で有意に悪化する場合�
 
 | # | 基準 | 状態 |
 |---|---|---|
-| AC-M1 | パラメータなしで RAW v1 と聴感・実装経路が同一（部分音ノードを生成しない） | ✅ M0 でブラウザ確認済み |
+| AC-M1 | **`?timbre=raw`** で RAW v1 と聴感・実装経路が同一（部分音ノードを生成しない）。パラメータなしでは modal が鳴る | 本線化に伴い反転。要再確認 |
 | AC-M2 | **第1モード**の部分音比率が §3.2 の表と一致する（±0.001）。最重点は **Icosahedron voice A = (√3, 3)** と **Small Stellated Dodecahedron voice C = (φ, φ² = φ+1)** | ✅ 実測一致 |
 | AC-M3 | ti / td（A = B = C が同一長になる状態）で例外・無音化・NaN が発生せず、最短クラス voice が部分音なしで正常動作する | ✅ TD 実測 |
 | AC-M4 | Dod → SSD 遷移中、部分音が voice A から voice C へ `r = 1` を経由して受け渡され、周波数ジャンプが発生しない（§6.1） | ✅ 中間点 r=1.4277 を実測 |
@@ -518,12 +548,12 @@ Phase M4    評価。main へのマージ可否と UI トグル（v0.4）の判�
 
 | 関数 | 役割 |
 |---|---|
-| `mtResolve()` | `?timbre=modal` を1回だけ判定 |
+| `mtResolve()` | `?timbre=raw` を1回だけ判定（既定 modal） |
 | `mtInitVoice(ctx,v,i)` | 部分音ノード生成。`v.mode` を index の偶奇で確定 |
 | `mtPool()` | 候補プール `MT_POOL[0|1]` と `MT_POOLW` を確定 |
 | `mtCand(mode,fi)` | 候補クラス index を返す（−1 で候補なし） |
 | `mtApply(v,fv,g0,t)` | `{r, r²}` を部分音へ反映 |
-| `mtDump()` | **一時的な検証用**。`?timbre=modal` 時のみ `window.__mtDump` に生える。main マージ前に削除する |
+| ~~`mtDump()`~~ | 検証用の一時的な足場。**Phase M1 完了時に削除済み**（本線化に伴う規定どおり） |
 
 ### voice 割当（F2 の再掲）
 
@@ -586,4 +616,4 @@ python3 -m http.server 8000
 
 ---
 
-**Rollback:** 本ブランチはいつでも破棄可能。main の RAW v1 には一切触れない。
+**Rollback:** RAW v1 の音はタグ **`raw-v1`** に恒久保存されている。実行時は `?timbre=raw` で即座に比較できる。
