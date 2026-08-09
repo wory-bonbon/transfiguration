@@ -1208,8 +1208,11 @@ const MT_RMIN  = 1e-9;  /* r の下限。自クラス・同長クラスを候補
                            最終 1ulp がずれる。素の fk>fi だと自クラスが r=1+1e-16 の
                            「最小の候補」として常に勝ち、本来の候補を覆い隠す。 */
 const MT_RHO_B = 0.35;  /* ρ_base（§4）        */
-const MT_RHO_S = 0.25;  /* ρ_sig。ρ 上限 0.6（§4） */
-const MT_RHO_MX= 0.60;  /* ρ 上限（§4） */
+const MT_RHO_S = 0.65;  /* ρ_sig（§4 / §10-12。Phase M3 で 0.25 → 0.65） */
+const MT_RHO_MX= 1.00;  /* ρ 上限。正規化後の部分音ゲイン ρ/√(1+ρ²+ρ⁴) の微分は
+                           (1−ρ⁴) に比例し、ρ>1 で減少へ転じて AC-M5 が壊れる。
+                           したがって 1.0 が単調性の保証限界であり、
+                           σ による音色変化を最大まで振れる点でもある（§4 / §10-12） */
 const MT_SIG_MX= PHI;   /* σ の最大値。SEGS の g は 0 → φ（小星形十二面体）を動く */
 const MT_NPART = 2;     /* voice あたりの部分音数。§7 の縮退時は 1 へ落とす */
 
@@ -1224,8 +1227,32 @@ function mtResolve(){
     MT.on = !/(?:^|[?&])timbre=raw(?:&|$)/.test(q);
   }catch(e){ MT.on = true; }
   if(!MT.on) console.info('[TRANSFIGURATION] timbre: RAW v1 (tag raw-v1 相当)');
+  else{ try{ window.__mtDump = mtDump; }catch(e){} }
   return MT.on;
 }
+/* ============ 一時的な検証用の足場。main へマージする前に削除する ============
+   コンソールで __mtDump() を呼ぶと、その瞬間の代表長・基音・比率を表で出す。
+   Phase M3 では TI（切頂二十面体）の第2モード実測値の採取に使う（§3.2）。 */
+function mtDump(){
+  const rows=[];
+  for(let k=0;k<4;k++){
+    for(let m=0;m<2;m++){
+      const i=2*k+m, v=SOUND.voices[i];
+      const c=SND_CLS[m ? sndOrd2[k] : sndOrd[k]];
+      const L=m ? c.len2 : c.len, f=(v && v.last) || 0;
+      const ci=mtCand(m, f), r=(ci>=0)?MT_POOL[m][ci]/f:0;
+      rows.push({ voice:i, mode:m+1, cls:c.key,
+                  L:+L.toFixed(6), f_Hz:+f.toFixed(2), weight:+c.weight.toFixed(4),
+                  cand: ci>=0 ? SND_CLS[ci].key : null,
+                  r: r?+r.toFixed(6):null, r2: r?+(r*r).toFixed(6):null,
+                  p1_Hz: r?+(f*r).toFixed(2):null, p2_Hz: r?+(f*r*r).toFixed(2):null,
+                  rho:+MT.rho.toFixed(3) });
+    }
+  }
+  console.table(rows);
+  return rows;
+}
+/* ====================== 一時的な検証用ここまで ====================== */
 /* 部分音 Osc / Gain を生成し v.parts へ格納する。voice Filter の前段で合流させ、
    既存の安全ロールオフを部分音にも効かせる（§5）。MT.on のときだけ呼ばれる。
    voice のモードは index の偶奇で静的に決まる（偶数=第1モード / 奇数=第2モード）。 */
