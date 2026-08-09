@@ -309,14 +309,17 @@ w_r = smoothstep( (r − 1) / δ )          r→1 のコヒーレント加算フ
 ## 4. 部分音のゲイン設計
 
 ```text
-g_k = g_0 · ρ^k · w_r · w_c · sndGate(f_i · r^k) · norm        （k = 1, 2）
+a_k  = ρ^k · w_r · w_c · sndGate(f_i · r^k)     部分音の実効相対振幅（k = 1, 2）
+norm = 1 / √( 1 + a_1² + a_2² )                voice ごとのパワー和正規化
 
-ρ    = ρ_base + ρ_sig · σ_normalized
-       デフォルト: ρ_base = 0.35 , ρ_sig = 0.25（ρ 上限 0.6）
+  基音   :  g_0 · norm
+  部分音 :  g_0 · a_k · norm
+
+ρ    = ρ_base + ρ_sig · (σ / φ)       σ は SEGS 上で 0 → φ を動く
+       ρ_base = 0.35 , ρ_sig = 0.25 , ρ 上限 0.6
 
 w_r  = smoothstep((r − 1)/δ)          δ = 0.05（§6.2）
 w_c  = smoothstep(weight_cand/0.02)   候補クラスの退化フェード（§3.4）
-norm = 1 / √(1 + ρ² + ρ⁴)             パワー和正規化
 ```
 
 `g_0` は既存実装の voice ゲイン（`SND_GBASE · weight · SND_M2^(mode-1) · sndGate(f_i)`）をそのまま使う。
@@ -326,21 +329,35 @@ norm = 1 / √(1 + ρ² + ρ⁴)             パワー和正規化
 3. **正規化はパワー和で行う。** 異周波数の正弦波は非コヒーレントに加算されるため、振幅和 `1/(1+ρ+ρ²)` で割ると σ = 0 で約 −3.4 dB 下がり、AC-M1 と衝突する。パワー和なら σ = 0 で −0.55 dB、ρ 上限 0.6 でも −1.7 dB に収まる
 4. 最終的なクリップ防止は既存の Compressor（threshold −12 dB / ratio 12）が担う。v1.1 §11 のグラフは変更しない
 
-**Phase M1 時点の実装は `ρ = ρ_base` 固定で、`norm` は未適用。** σ 連動と正規化は Phase M2（§11）。
+5. **`norm` は voice ごとの実効値で計算する。** v0.2 が書いた `1/√(1+ρ²+ρ⁴)` は両部分音が満振幅のときの特例であり、候補なし・帯域外・`r → 1` の voice では `a_k = 0` となって自動的に `norm = 1` になる。固定式を使うと、部分音を持たない voice まで一律に減衰してしまう
+6. **`norm` は filter の後段に置いた専用 GainNode（`v.norm`）が担う。** 基音のゲインは RAW の `sndApply()` が握っているため、同じ AudioParam へ二重に自動化を積まずに済む（§5）
+
+### σ 連動の実測値（Phase M2）
+
+TD voice C（`r = φ`、両部分音が帯域内）での実効ゲイン。総パワーは σ に依らず 1 に保たれる。
+
+| σ | ρ | 基音 | 部分音1 | 部分音2 |
+|---|---|---|---|---|
+| 0（凸） | 0.350 | −0.56 dB | −9.68 dB | −18.80 dB |
+| φ/2 | 0.475 | −1.06 dB | −7.53 dB | −13.99 dB |
+| φ（SSD） | 0.600 | −1.73 dB | −6.17 dB | −10.60 dB |
+
+星形化が進むにつれてエネルギーが基音から部分音へ移る。σ は幾何としても `len2`（apex→辺中点距離）を伸ばすため、ρ は同じ幾何変化の音色側の現れであって別系統の演出ではない。
 
 ---
 
 ## 5. Audio Graph の変更（Voice 内部のみ）
 
 ```text
-[v1 RAW]   Osc → Gain → Filter ─┐
-                                 ├→ Voice Mix → Compressor → Master Gain → Destination
-[modal]    Osc(基音)   → g_0 ┐   │
-           Osc(部分音1) → g_1 ├→ Filter ┤（voice 内で合流）
-           Osc(部分音2) → g_2 ┘   │
+[v1 RAW]   Osc → Gain → Filter ────────────┐
+                                            ├→ Voice Mix → Compressor → Master Gain → Destination
+[modal]    Osc(基音)   → g_0 ┐              │
+           Osc(部分音1) → g_1 ├→ Filter → norm ┤（voice 内で合流）
+           Osc(部分音2) → g_2 ┘              │
 ```
 
 - 部分音 Oscillator は既存の voice Filter の**前段**で合流させる。安全ロールオフ（lowpass 5000 Hz）を部分音にも効かせるため
+- Filter の**後段**にパワー和正規化用の GainNode（`v.norm`）を挿む。基音と部分音の両方へ一度だけ効く（§4-6）
 - 外側のグラフ（Mix 以降）は v1.1 §11 から**一切変更しない**。StereoPanner（P2）の挿入位置も v1.1 のまま
 - 部分音ノードは `?timbre=raw` **でないとき**に生成する（既定 = modal。AC-M1）
 - v1.1 §4.1 のとおり、AudioNode をフレームごとに生成・破棄しない。初期化時に確保し、以後はパラメータのみ更新する
@@ -442,11 +459,11 @@ Phase M3 の検証で CPU 使用率が RAW v1 比で有意に悪化する場合�
 | AC-M2 | **第1モード**の部分音比率が §3.2 の表と一致する（±0.001）。最重点は **Icosahedron voice A = (√3, 3)** と **Small Stellated Dodecahedron voice C = (φ, φ² = φ+1)** | ✅ 実測一致 |
 | AC-M3 | ti / td（A = B = C が同一長になる状態）で例外・無音化・NaN が発生せず、最短クラス voice が部分音なしで正常動作する | ✅ TD 実測 |
 | AC-M4 | Dod → SSD 遷移中、部分音が voice A から voice C へ `r = 1` を経由して受け渡され、周波数ジャンプが発生しない（§6.1） | ✅ 中間点 r=1.4277 を実測 |
-| AC-M5 | σ = 0 → max の掃引で部分音ゲインが単調に増加する | Phase M2 |
+| AC-M5 | σ = 0 → max の掃引で部分音ゲインが単調に増加する | ✅ 数値検証済み（要聴感確認） |
 | AC-M6 | L→0 系の全遷移（v1.1 AC-15 の対象）で非有限値が AudioParam に渡らない。ε 条件により `r` が 20 を超えない | ✅ 単体検証済み |
 | AC-M7 | Sound OFF 時に部分音関連の計算・ノードが動作しない | Phase M3 |
 | AC-M8 | `Math.random()` 不使用・同一状態で常に同一スペクトル | ✅ |
-| AC-M9 | 順序交差点（`r → 1`）で基音のゲインが +1 dB を超えて膨らまない（§6.2） | Phase M2 |
+| AC-M9 | 順序交差点（`r → 1`）で基音のゲインが +1 dB を超えて膨らまない（§6.2） | ✅ 最悪ケース（σ=φ）でも 0.00 dB |
 | AC-M10 | v1.1 の全 AC（特に AC-05 / AC-10 / AC-15）が `?timbre=modal` 状態でも維持される | Phase M3 |
 | **AC-M11** | **自クラス・同長クラスが候補にならない。** TD で voice C が `cand=A / r=φ`、voice B が `cand=D / r=√3` になる（§3.1 ρ_min） | ✅ 実測再生で確認 |
 | **AC-M12** | **`weight = 0` のクラスの `len2` が候補にならない。** Ico で `B.len2 = 0.0037` が誰の候補にもならない（§3.1 weight） | ✅ 実測再生で確認 |
@@ -494,8 +511,8 @@ Phase M1 ✅ 比率導出（§3.1）＋部分音ノード（ρ_base 固定）
             第2モード len2 の実測値を §3.2 へ記録
             → AC-M2 / M3 / M4 / M6 / M8 / M11 / M12 / M13
 
-Phase M2    σ 連動ゲイン（§4）＋パワー和正規化
-            → AC-M5 / M9
+Phase M2 ✅ σ 連動ゲイン（§4）＋ voice ごとのパワー和正規化
+            → AC-M5 / M9（数値検証済み。聴感確認待ち）
 
 Phase M3    性能検証（§7）・聴感調整（§10-5 / §10-6）・TI 第2モードの実測
             → AC-M7 / AC-M10・全 AC 再確認
@@ -544,6 +561,8 @@ Phase M4    評価。main へのマージ可否と UI トグル（v0.4）の判�
 | `MT_WGATE` | 0.02 | `w_c` の帯幅（weight 基準） |
 | `MT_RMIN` | 1e-9 | 候補比率の下限。自クラス・同長クラスの除外 |
 | `MT_RHO_B` / `MT_RHO_S` | 0.35 / 0.25 | ρ_base / ρ_sig |
+| `MT_RHO_MX` | 0.60 | ρ 上限 |
+| `MT_SIG_MX` | φ | σ の最大値（SEGS の `g` が取る最大） |
 | `MT_NPART` | 2 | voice あたりの部分音数 |
 
 | 関数 | 役割 |
@@ -552,7 +571,8 @@ Phase M4    評価。main へのマージ可否と UI トグル（v0.4）の判�
 | `mtInitVoice(ctx,v,i)` | 部分音ノード生成。`v.mode` を index の偶奇で確定 |
 | `mtPool()` | 候補プール `MT_POOL[0|1]` と `MT_POOLW` を確定 |
 | `mtCand(mode,fi)` | 候補クラス index を返す（−1 で候補なし） |
-| `mtApply(v,fv,g0,t)` | `{r, r²}` を部分音へ反映 |
+| `mtApply(v,fv,g0,t)` | `{r, r²}` を部分音へ反映。実効パワー和で `v.norm` を設定 |
+| `v.norm` | voice ごとの正規化 GainNode（filter の後段） |
 | ~~`mtDump()`~~ | 検証用の一時的な足場。**Phase M1 完了時に削除済み**（本線化に伴う規定どおり） |
 
 ### voice 割当（F2 の再掲）
