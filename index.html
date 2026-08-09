@@ -899,7 +899,7 @@ function sndFail(err){
   console.warn('[TRANSFIGURATION] sonification disabled:', (err && err.message) ? err.message : err);
 }
 function sndInit(){
-  const modal = mtResolve();   /* seam 1/3 — ?timbre=modal（§12b / §8-4） */
+  const modal = mtResolve();   /* seam 1/4 — ?timbre=modal（§12b / §8-4） */
   const AC = window.AudioContext || window.webkitAudioContext;
   if(!AC) throw new Error('AudioContext unavailable');
   const ctx = new AC();
@@ -921,7 +921,7 @@ function sndInit(){
     osc.connect(g); g.connect(f); f.connect(mix);
     osc.start();                          /* 以後 stop しない。再生成もしない */
     const v = {osc:osc, gain:g, filter:f, last:0};
-    if(modal) mtInitVoice(ctx, v);        /* seam 2/3 — 部分音は modal 時のみ（AC-M1） */
+    if(modal) mtInitVoice(ctx, v, i);     /* seam 2/4 — 部分音は modal 時のみ（AC-M1） */
     voices.push(v);
   }
   SOUND.ctx=ctx; SOUND.mix=mix; SOUND.comp=comp; SOUND.master=master; SOUND.voices=voices;
@@ -1117,7 +1117,7 @@ function sndApply(v, L, w, mw, t){
     v.osc.frequency.setValueAtTime(fv, t);
     v.gain.gain.setValueAtTime(g, t);
   }
-  if(MT.on) mtApply(v, fv, g, t);   /* seam 3/3 — 部分音（§12b / §3.1 §4） */
+  if(MT.on) mtApply(v, fv, g, t);   /* seam 3/4 — 部分音（§12b / §3.1 §4） */
 }
 function sndTick(){
   if(!SOUND.enabled || SOUND.failed || !SOUND.ctx || !curM) return;   /* OFF時は何もしない */
@@ -1125,6 +1125,7 @@ function sndTick(){
   if(SOUND.primed && now-SOUND.lastUpdate < SND_DT) return;           /* 25Hz */
   SOUND.lastUpdate=now;
   sndMetrics();
+  if(MT.on) mtPool();   /* seam 4/4 — 候補プールを確定（§12b / §3.1） */
   for(let k=0;k<4;k++){
     const c1=SND_CLS[sndOrd[k]];                 /* 偶数 voice = 第1モード */
     sndApply(SOUND.voices[2*k],   c1.len,  c1.weight, 1.0,    now);
@@ -1174,17 +1175,22 @@ function setSound(on){
 if(sndBtn) sndBtn.addEventListener('click', function(){ setSound(!SOUND.enabled); });
 
 /* ---------- 12b. Modal Timbre（feature/modal-timbre）----------------------
-   要件定義書 docs/modal-timbre-requirements-v0.2.md
+   要件定義書 docs/modal-timbre-requirements-v0.3.md
 
-   Phase M0 — ?timbre= 分岐骨格のみ（AC-M1）
+   Phase M1 — 比率導出（§3.1）＋部分音ノード（固定ゲイン）
      · ?timbre=modal のときだけ部分音を有効化する。既定は RAW v1 と完全に同一
      · パラメータなしのとき部分音ノードを生成せず、実行経路も RAW と同一に保つ
-     · 比率導出（§3.1）と部分音ノード生成（§5）は Phase M1 で実装する
+     · 自己相似方式 { r, r² }。r = 自分より1段だけ短い代表長との比（§3.1）
+     · 候補は 3 つの門を通す（§3.4）
+         weight > 0        無音クラスの凍結 len2 を弾く
+         L_k ≥ ε·L_i       退化フェード中の比率発散を弾く
+         r > 1 + MT_RMIN   自クラス・同長クラスの ULP 混入を弾く
+     · ゲインは ρ_base 固定。σ 連動とパワー和正規化は Phase M2（§4）
      · §12 の RAW 実装（sndTables / sndBuildP / sndFaceLoop / sndMetrics）は
        読むだけで一切改変しない（§2-5）
      · 既存の固定フィルタ（lowpass 5000Hz / Q 0.7）も変更しない。modal の
        高域調整は ρ_sig 側のみで行う（§10-4）
-   このブロックと §12 内の 3 箇所の seam を消せば RAW v1 に戻る。
+   このブロックと §12 内の 4 箇所の seam を消せば RAW v1 に戻る。
    ------------------------------------------------------------------------- */
 const MT = {
   on      : false,   /* ?timbre=modal か。sndInit() の直前に1回だけ確定する（§8-4） */
@@ -1193,6 +1199,12 @@ const MT = {
 /* §10 で確定した定数。ε / δ / ρ は Phase M3 で調整する（§10-5 §10-6） */
 const MT_EPS   = 0.05;  /* 候補比率の相対しきい値。r ≤ 1/MT_EPS = 20（§3.1） */
 const MT_DELTA = 0.05;  /* r→1 フェードの帯幅（§6.2） */
+const MT_WGATE = 0.02;  /* 候補クラスの weight フェード帯。プール離脱を無音で吸収 */
+const MT_RMIN  = 1e-9;  /* r の下限。自クラス・同長クラスを候補から外す（§3.1）。
+                           sndApply は f=SND_F0*(SND_LREF/L)、mtPool は
+                           SND_F0*SND_LREF/len と結合順が違うため、同じクラスでも
+                           最終 1ulp がずれる。素の fk>fi だと自クラスが r=1+1e-16 の
+                           「最小の候補」として常に勝ち、本来の候補を覆い隠す。 */
 const MT_RHO_B = 0.35;  /* ρ_base（§4）        */
 const MT_RHO_S = 0.25;  /* ρ_sig。ρ 上限 0.6（§4） */
 const MT_NPART = 2;     /* voice あたりの部分音数。§7 の縮退時は 1 へ落とす */
@@ -1205,16 +1217,131 @@ function mtResolve(){
     const q = (window.location && window.location.search) || '';
     MT.on = /(?:^|[?&])timbre=modal(?:&|$)/.test(q);
   }catch(e){ MT.on = false; }
-  if(MT.on) console.info('[TRANSFIGURATION] modal timbre: ON (Phase M0 — 部分音は未実装)');
+  if(MT.on){
+    console.info('[TRANSFIGURATION] modal timbre: ON (Phase M1)');
+    try{ window.__mtDump = mtDump; }catch(e){}
+  }
   return MT.on;
 }
-/* Phase M1: 部分音 Osc / Gain を生成し v.parts へ格納する。
-   voice Filter の前段で合流させる（§5）。MT.on のときだけ呼ばれる。 */
-function mtInitVoice(ctx, v){ /* Phase M1 */ }
-/* Phase M1: 自長と候補プール P₁ / P₂ から r と r² を導出し部分音へ反映する（§3.1）。
+/* Phase M1 の実測用の一時的な足場。?timbre=modal のときだけ window へ生やす。
+   コンソールで __mtDump() を呼ぶと、その瞬間の代表長・基音・比率を表で出す。
+   要件定義書 §3.2 の第2モード基準値を記録するために使う。
+   main へマージする前に必ず削除すること。 */
+function mtDump(){
+  const rows=[];
+  for(let k=0;k<4;k++){
+    for(let m=0;m<2;m++){
+      const i=2*k+m, v=SOUND.voices[i];
+      const c=SND_CLS[m ? sndOrd2[k] : sndOrd[k]];
+      const L=m ? c.len2 : c.len, f=(v && v.last) || 0;
+      const ci=mtCand(m, f), r=(ci>=0)?MT_POOL[m][ci]/f:0;
+      rows.push({ voice:i, mode:m+1, cls:c.key,
+                  L:+L.toFixed(6), f_Hz:+f.toFixed(2), weight:+c.weight.toFixed(4),
+                  cand: ci>=0 ? SND_CLS[ci].key : null,
+                  r: r?+r.toFixed(6):null, r2: r?+(r*r).toFixed(6):null,
+                  p1_Hz: r?+(f*r).toFixed(2):null, p2_Hz: r?+(f*r*r).toFixed(2):null });
+    }
+  }
+  console.table(rows);
+  return rows;
+}
+/* 部分音 Osc / Gain を生成し v.parts へ格納する。voice Filter の前段で合流させ、
+   既存の安全ロールオフを部分音にも効かせる（§5）。MT.on のときだけ呼ばれる。
+   voice のモードは index の偶奇で静的に決まる（偶数=第1モード / 奇数=第2モード）。 */
+function mtInitVoice(ctx, v, i){
+  v.mode = (i & 1) ? 1 : 0;            /* MT_POOL の添字。0=第1モード, 1=第2モード */
+  const parts = [];
+  for(let k=0;k<MT_NPART;k++){
+    const o = ctx.createOscillator();  o.type='sine';  o.frequency.value = SND_F0;
+    const g = ctx.createGain();        g.gain.value = 0;
+    o.connect(g); g.connect(v.filter);
+    o.start();                          /* 以後 stop しない。再生成もしない（§4.1） */
+    parts.push({osc:o, gain:g, last:SND_F0});
+  }
+  v.parts = parts;
+}
+
+/* 候補プール（§3.1）。4 クラスの代表長をモード別に周波数へ直して保持する。
+   f = f0·L_ref/L なので L_i/L_k = f_k/f_i。すなわち比率探索は
+   「自分より高い最寄りの周波数を選ぶ」ことと同値で、除算を1回に減らせる。
+
+   要件定義書 §3.1 は「退化クラスは len が 0 付近まで追随してから凍結するので
+   ε 条件だけで排除できる」としているが、これは第1モードにしか当てはまらない。
+   第2モード長 len2 は面の apothem / apex→辺中点距離であり、辺長が 0 へ潰れても
+   0 にならない。accAdd の辺重み ew が 0 になって集計母集団から外れ、len2 は
+   「無音なのに通常の大きさのまま」凍結する（F3）。この値をそのまま候補にすると、
+   鳴っていないクラス由来の部分音が出る。したがって weight でも門を設ける。
+   ただし weight は 0 へなめらかに落ちてから厳密に 0 になるため、プールからの
+   離脱を周波数ジャンプにしないよう、部分音側を MT_WGATE でフェードさせる
+   （v1.1 §18.1 の「退化は gain fade で処理し周波数は跳ばさない」に合わせる）。 */
+const MT_POOL  = [new Float64Array(4), new Float64Array(4)];
+const MT_POOLW = new Float64Array(4);   /* クラス weight。モード共通 */
+function mtPool(){
+  for(let j=0;j<4;j++){
+    const c = SND_CLS[j];
+    const w = (c.weight > 0 && isFinite(c.weight)) ? c.weight : 0;
+    MT_POOLW[j] = w;
+    MT_POOL[0][j] = (w>0 && c.len  > SND_EPS && isFinite(c.len )) ? SND_F0*SND_LREF/c.len  : 0;
+    MT_POOL[1][j] = (w>0 && c.len2 > SND_EPS && isFinite(c.len2)) ? SND_F0*SND_LREF/c.len2 : 0;
+  }
+}
+/* 候補クラスの index を返す。−1 で候補なし（案A。§3.1-2 / §10-7）。
+   下限 f_i·(1+MT_RMIN) は自クラスと同長クラスを除外する。ti / td のように
+   L_A = L_B が厳密に成り立つ状態では、§3.1 の狭義不等式 L_k < L_i どおり
+   互いを候補にしない。上限 f_i/ε より r ≤ 1/MT_EPS = 20（AC-M6）。 */
+function mtCand(mode, fi){
+  if(!(fi>0) || !isFinite(fi)) return -1;
+  const pool = MT_POOL[mode], lo = fi*(1+MT_RMIN), hi = fi/MT_EPS;
+  let bi = -1, bf = 0;
+  for(let j=0;j<4;j++){
+    const fk = pool[j];
+    if(fk > lo && fk <= hi && (bi < 0 || fk < bf)){ bi = j; bf = fk; }
+  }
+  return bi;
+}
+/* 自己相似 { r, r² } を部分音へ反映する（§3.1）。
    fv = sndApply が確定した基音周波数, g0 = 基音ゲイン, t = ctx.currentTime。
-   候補なしの voice は部分音を持たない（案A。§3.1-2 / §10-7）。 */
-function mtApply(v, fv, g0, t){ /* Phase M1 */ }
+   非有限値は AudioParam へ渡さず、周波数は直前値を保持する（§3.3 / v1.1 §18.1）。 */
+function mtApply(v, fv, g0, t){
+  const parts = v.parts;
+  if(!parts) return;
+  const ci = mtCand(v.mode, fv);
+  const r  = (ci >= 0) ? MT_POOL[v.mode][ci]/fv : 0;
+  /* r→1 近傍は基音と部分音が同一周波数へ重なりコヒーレント加算になる（§6.2）。
+     ti / td は A=B=C が同一長のため r≈1 となり、浮動小数の揺れで候補が 25Hz で
+     出入りしてフリッカーする。§11 では M2 の項目だが、この guard が無いと M1 の
+     聴感評価そのものが成立しないため前倒しで入れる。
+     wc は候補クラスが退化していく際のフェード。プール離脱を無音側で吸収する。 */
+  const wc = (ci >= 0) ? sndSmooth(MT_POOLW[ci]/MT_WGATE) : 0;
+  const wr = (r > 1) ? sndSmooth((r-1)/MT_DELTA)*wc : 0;
+  let rk = 1;
+  for(let k=0;k<parts.length;k++){
+    const p = parts[k];
+    rk *= r;                                   /* k=0 → r , k=1 → r² */
+    let f = 0, g = 0;
+    if(r > 1){
+      const x = fv*rk;
+      if(isFinite(x) && x > 0){
+        f = x;
+        /* Phase M1 は ρ_base 固定。σ 連動とパワー和正規化は Phase M2（§4） */
+        g = g0 * Math.pow(MT_RHO_B, k+1) * wr * sndGate(x);
+      }
+    }
+    if(f > 0) p.last = f;
+    let pf = p.last;
+    if(!isFinite(pf) || pf <= 0) pf = SND_F0;
+    if(pf > 20000) pf = 20000; else if(pf < 10) pf = 10;
+    if(!isFinite(g) || g < 0) g = 0;
+    if(!isFinite(pf) || !isFinite(g)) continue;      /* 最終防御（AC-M6） */
+    if(SOUND.primed){
+      p.osc.frequency.setTargetAtTime(pf, t, SND_TC_F);
+      p.gain.gain.setTargetAtTime(g, t, SND_TC_G);
+    }else{
+      p.osc.frequency.setValueAtTime(pf, t);
+      p.gain.gain.setValueAtTime(g, t);
+    }
+  }
+}
 
 /* ---------- 13. ループ ---------------------------------------------------- */
 const clock=new THREE.Clock();
