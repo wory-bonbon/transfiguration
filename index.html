@@ -1227,32 +1227,8 @@ function mtResolve(){
     MT.on = !/(?:^|[?&])timbre=raw(?:&|$)/.test(q);
   }catch(e){ MT.on = true; }
   if(!MT.on) console.info('[TRANSFIGURATION] timbre: RAW v1 (tag raw-v1 相当)');
-  else{ try{ window.__mtDump = mtDump; }catch(e){} }
   return MT.on;
 }
-/* ============ 一時的な検証用の足場。main へマージする前に削除する ============
-   コンソールで __mtDump() を呼ぶと、その瞬間の代表長・基音・比率を表で出す。
-   Phase M3 では TI（切頂二十面体）の第2モード実測値の採取に使う（§3.2）。 */
-function mtDump(){
-  const rows=[];
-  for(let k=0;k<4;k++){
-    for(let m=0;m<2;m++){
-      const i=2*k+m, v=SOUND.voices[i];
-      const c=SND_CLS[m ? sndOrd2[k] : sndOrd[k]];
-      const L=m ? c.len2 : c.len, f=(v && v.last) || 0;
-      const ci=mtCand(m, f), r=(ci>=0)?MT_POOL[m][ci]/f:0;
-      rows.push({ voice:i, mode:m+1, cls:c.key,
-                  L:+L.toFixed(6), f_Hz:+f.toFixed(2), weight:+c.weight.toFixed(4),
-                  cand: ci>=0 ? SND_CLS[ci].key : null,
-                  r: r?+r.toFixed(6):null, r2: r?+(r*r).toFixed(6):null,
-                  p1_Hz: r?+(f*r).toFixed(2):null, p2_Hz: r?+(f*r*r).toFixed(2):null,
-                  rho:+MT.rho.toFixed(3) });
-    }
-  }
-  console.table(rows);
-  return rows;
-}
-/* ====================== 一時的な検証用ここまで ====================== */
 /* 部分音 Osc / Gain を生成し v.parts へ格納する。voice Filter の前段で合流させ、
    既存の安全ロールオフを部分音にも効かせる（§5）。MT.on のときだけ呼ばれる。
    voice のモードは index の偶奇で静的に決まる（偶数=第1モード / 奇数=第2モード）。 */
